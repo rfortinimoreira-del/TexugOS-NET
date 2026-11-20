@@ -1,0 +1,9 @@
+/build/
+/build-ui/
+/build-ui-next/
+/build-ui-final/
+/build-notepad/
+/build-notepad-os/
+/build-fat32-audit/
+__pycache__/
+*.py[cod]
