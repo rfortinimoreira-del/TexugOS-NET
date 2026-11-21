@@ -163,11 +163,12 @@ $(BUILD)/secure_random.o: network/secure_random.c \
 		network/secure_random.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
 
-$(BUILD)/mouse_cursor.h: assets/Mouse.png tools/mkcursor.py | $(BUILD)
+$(BUILD)/mouse_cursor.h: assets/Mouse.png tools/mkcursor.py FORCE | $(BUILD)
 	$(PYTHON) tools/mkcursor.py $< $@
 
 $(BUILD)/video.o: drivers/video.c drivers/video.h \
-		drivers/font_dejavu.h $(BUILD)/mouse_cursor.h | $(BUILD)
+		drivers/font_dejavu.h drivers/gfx_assets.h \
+		$(BUILD)/mouse_cursor.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
 
 $(BUILD)/ata.o: drivers/ata.c drivers/ata.h drivers/ahci.h \

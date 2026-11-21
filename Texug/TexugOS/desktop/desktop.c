@@ -47,6 +47,7 @@ static int32_t active_window = -1;
 static uint8_t menu_open;
 static uint8_t return_to_shell_requested;
 static enum drag_mode dragging;
+static int32_t hovered_icon = -1;
 static int32_t drag_offset_x;
 static int32_t drag_offset_y;
 
@@ -61,11 +62,10 @@ static int32_t clamp(int32_t value, int32_t minimum, int32_t maximum)
     return value;
 }
 
-static void draw_icon(uint32_t index)
+/* Icones simples feitos de retangulos: usados so quando o modo de video
+ * de alta resolucao (VBE 640x480) nao esta disponivel. */
+static void draw_legacy_icon(uint32_t index, int32_t icon_x, int32_t y)
 {
-    int32_t tile_x = 8 + (int32_t)(index % 2u) * 72;
-    int32_t y = 12 + (int32_t)(index / 2u) * 40;
-    int32_t icon_x = tile_x + 18;
     if (index == 0u) {
         video_fill_rect(icon_x + 4, y + 7, 13u, 5u, 14u);
         video_fill_rect(icon_x + 2, y + 11, 28u, 14u, 6u);
@@ -132,6 +132,16 @@ static void draw_icon(uint32_t index)
         video_fill_rect(icon_x + 11, y + 7, 11u, 13u, 15u);
         video_fill_rect(icon_x + 15, y + 3, 4u, 5u, 4u);
         video_fill_rect(icon_x + 8, y + 21, 17u, 3u, 8u);
+    }
+}
+
+static void draw_icon(uint32_t index)
+{
+    int32_t tile_x = 8 + (int32_t)(index % 2u) * 72;
+    int32_t y = 12 + (int32_t)(index / 2u) * 40;
+    if (!video_draw_app_icon(index, tile_x + 34, y + 15,
+                             (int32_t)index == hovered_icon)) {
+        draw_legacy_icon(index, tile_x + 18, y);
     }
 
     video_draw_text_centered(tile_x, y + 31, 68u, 11u,
@@ -321,6 +331,20 @@ static int32_t hit_test_window(uint32_t x, uint32_t y)
     return -1;
 }
 
+/* Icone da area de trabalho sob o ponteiro (mesma regiao do clique). */
+static int32_t icon_index_at(uint32_t x, uint32_t y)
+{
+    if (x >= 8u && x < 148u && y >= 12u && y < 172u) {
+        uint32_t column = x < 76u ? 0u : 1u;
+        uint32_t row = (y - 12u) / 40u;
+        uint32_t index = row * 2u + column;
+        if (index < WINDOW_COUNT) {
+            return (int32_t)index;
+        }
+    }
+    return -1;
+}
+
 static void handle_click(uint32_t x, uint32_t y)
 {
     if (y >= (uint32_t)TASKBAR_Y && x >= 5u && x < 40u) {
@@ -450,6 +474,7 @@ void desktop_run(void)
     menu_open = 0u;
     return_to_shell_requested = 0u;
     dragging = DRAG_NONE;
+    hovered_icon = -1;
     desktop_apps_initialize();
     if (!video_set_graphics_mode()) {
         console_write("Unable to set VGA graphics mode.\n");
@@ -536,6 +561,9 @@ void desktop_run(void)
         uint32_t ticks = pit_ticks_read();
         if ((uint32_t)(ticks - last_render_tick) >=
             DESKTOP_RENDER_INTERVAL_TICKS) {
+            hovered_icon = (!menu_open && dragging == DRAG_NONE &&
+                            hit_test_window(mouse_x, mouse_y) < 0)
+                               ? icon_index_at(mouse_x, mouse_y) : -1;
             draw_desktop(mouse_x, mouse_y);
             video_present();
             last_render_tick = ticks;

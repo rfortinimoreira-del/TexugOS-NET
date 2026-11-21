@@ -20,6 +20,13 @@ void video_fill_circle(int32_t center_x, int32_t center_y, uint32_t radius,
                        uint8_t color);
 void video_draw_mouse_cursor(int32_t x, int32_t y);
 
+/* Icone do aplicativo `icon` (0..7) centrado em (center_x, center_y), em
+ * coordenadas logicas. Com `hover` o icone e desenhado um pouco maior.
+ * Retorna 0 se o modo de video nao suporta icones em alta resolucao (VGA
+ * 320x200); nesse caso quem chama desenha o icone antigo. */
+int video_draw_app_icon(uint32_t icon, int32_t center_x, int32_t center_y,
+                        int hover);
+
 /* Primitivas lisas com borda de 1 pixel real (nitidas em qualquer modo). */
 void video_draw_frame(int32_t x, int32_t y, uint32_t width, uint32_t height,
                       uint8_t color);

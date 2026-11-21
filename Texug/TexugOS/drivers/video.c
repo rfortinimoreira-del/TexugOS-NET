@@ -2,8 +2,9 @@
 
 #include "bios_video.h"
 #include "font_dejavu.h"
+#include "gfx_assets.h"
 #include "frame_allocator.h"
-#include "mouse_cursor.h"
+#include "cursor_hires.h"
 #include "paging.h"
 #include "video.h"
 
@@ -61,25 +62,22 @@ static const uint8_t mode3_attribute[21] = {
     0x0c, 0x00, 0x0f, 0x08, 0x00,
 };
 
-static const uint8_t desktop_palette[16][3] = {
-    {5, 6, 7}, /*  0 contorno */
-    {11, 13, 13}, /*  1 texto escuro / barras */
-    {15, 19, 25}, /*  2 azul aco (botoes do painel) */
-    {11, 20, 32}, /*  3 fundo do desktop */
-    {52, 18, 17}, /*  4 vermelho */
-    {35, 31, 52}, /*  5 roxo */
-    {53, 36, 10}, /*  6 ambar */
-    {55, 55, 55}, /*  7 cinza claro (widgets) */
-    {34, 36, 37}, /*  8 cinza de borda */
-    {14, 32, 53}, /*  9 azul de destaque */
-    {14, 38, 22}, /* 10 verde */
-    {31, 50, 57}, /* 11 ciano */
-    {53, 16, 23}, /* 12 vermelho/erro */
-    {57, 35, 45}, /* 13 rosa */
-    {59, 50, 15}, /* 14 amarelo */
-    {63, 63, 63}, /* 15 branco */
-};
+/* A paleta de 256 cores (0..15 = cores do desktop, 16..39 = cinzas,
+ * 40..254 = cores dos icones e das misturas do anti-aliasing) vem de
+ * gfx_assets.h. O indice 255 nunca e usado como cor de desenho. */
+#define PALETTE_USABLE 255u
+#define TEXT_BLEND_LEVELS (FONT_LEVELS - 1u)
+#define CACHE_EMPTY 0xffu
+#define ICON_HOVER_LIGHTEN 26u
 
+static uint8_t text_blend_cache[16][256][TEXT_BLEND_LEVELS];
+static uint8_t cursor_grey_index[256];
+static uint8_t lighten_index[256];
+static uint8_t icon_hover_cache[GFX_ICON_COUNT]
+                               [GFX_ICON_HOVER_SIZE * GFX_ICON_HOVER_SIZE];
+static uint8_t icon_hover_ready[GFX_ICON_COUNT];
+static uint8_t icon_scratch[GFX_ICON_SIZE * GFX_ICON_SIZE];
+static uint8_t blend_tables_ready;
 
 static uint8_t saved_text_font[VGA_FONT_CHARACTERS * VGA_FONT_HEIGHT];
 static uint8_t text_font_saved;
@@ -199,11 +197,63 @@ static void set_mode(uint8_t misc, const uint8_t *sequencer,
 static void set_desktop_palette(void)
 {
     out8(VGA_DAC_WRITE_INDEX, 0u);
-    for (uint32_t color = 0u; color < 16u; ++color) {
+    for (uint32_t color = 0u; color < 256u; ++color) {
         for (uint32_t channel = 0u; channel < 3u; ++channel) {
-            out8(VGA_DAC_DATA, desktop_palette[color][channel]);
+            out8(VGA_DAC_DATA, gfx_palette[color][channel]);
         }
     }
+}
+
+/* Cor da paleta mais proxima de (r, g, b), em escala 0..252 (6 bits * 4). */
+static uint8_t palette_nearest(int32_t r, int32_t g, int32_t b)
+{
+    uint32_t best = 0xffffffffu;
+    uint8_t best_index = 0u;
+    for (uint32_t index = 0u; index < PALETTE_USABLE; ++index) {
+        int32_t dr = r - (int32_t)gfx_palette[index][0] * 4;
+        int32_t dg = g - (int32_t)gfx_palette[index][1] * 4;
+        int32_t db = b - (int32_t)gfx_palette[index][2] * 4;
+        uint32_t distance = (uint32_t)(dr * dr + dg * dg + db * db);
+        if (distance < best) {
+            best = distance;
+            best_index = (uint8_t)index;
+            if (distance == 0u) {
+                break;
+            }
+        }
+    }
+    return best_index;
+}
+
+static void prepare_blend_tables(void)
+{
+    if (blend_tables_ready) {
+        return;
+    }
+    for (uint32_t fg = 0u; fg < 16u; ++fg) {
+        for (uint32_t bg = 0u; bg < 256u; ++bg) {
+            for (uint32_t level = 0u; level < TEXT_BLEND_LEVELS; ++level) {
+                text_blend_cache[fg][bg][level] = CACHE_EMPTY;
+            }
+        }
+    }
+    for (uint32_t grey = 0u; grey < 256u; ++grey) {
+        int32_t value = (int32_t)(grey * 252u / 255u);
+        cursor_grey_index[grey] = palette_nearest(value, value, value);
+    }
+    for (uint32_t index = 0u; index < 256u; ++index) {
+        int32_t channel[3];
+        for (uint32_t c = 0u; c < 3u; ++c) {
+            int32_t value = (int32_t)gfx_palette[index][c] * 4;
+            channel[c] = value + ((252 - value) * (int32_t)ICON_HOVER_LIGHTEN) / 256;
+        }
+        lighten_index[index] =
+            palette_nearest(channel[0], channel[1], channel[2]);
+    }
+    for (uint32_t icon = 0u; icon < GFX_ICON_COUNT; ++icon) {
+        icon_hover_ready[icon] = 0u;
+    }
+    blend_tables_ready = 1u;
 }
 
 static void select_text_font_plane(void)
@@ -260,6 +310,7 @@ int video_set_graphics_mode(void)
         framebuffers_allocated = 1u;
     }
     displayed_buffer_valid = 0u;
+    prepare_blend_tables();
     save_text_font();
     struct bios_video_mode mode;
     if (bios_video_set_640x480_mode(&mode)) {
@@ -366,6 +417,37 @@ static void framebuffer_pixel(int32_t x, int32_t y, uint8_t color)
         framebuffer_write(render_frames,
                           (uint32_t)y * width + (uint32_t)x, color);
     }
+}
+
+static uint8_t framebuffer_pixel_read(int32_t x, int32_t y)
+{
+    uint32_t width = video_display_width();
+    uint32_t height = video_display_height();
+    if (x < 0 || x >= (int32_t)width || y < 0 || y >= (int32_t)height) {
+        return 0u;
+    }
+    return framebuffer_read(render_frames,
+                            (uint32_t)y * width + (uint32_t)x);
+}
+
+/* Mistura a cor `fg` (0..15) sobre o pixel atual com cobertura 1..7 de 8. */
+static uint8_t blend_text_color(uint8_t fg, uint8_t background,
+                                uint32_t level)
+{
+    uint8_t *slot = &text_blend_cache[fg][background][level - 1u];
+    if (*slot == CACHE_EMPTY) {
+        int32_t channel[3];
+        for (uint32_t c = 0u; c < 3u; ++c) {
+            int32_t mixed =
+                (int32_t)gfx_palette[fg][c] * (int32_t)level +
+                (int32_t)gfx_palette[background][c] *
+                    (int32_t)(FONT_LEVELS - level);
+            channel[c] = (mixed * 4 + (int32_t)FONT_LEVELS / 2) /
+                         (int32_t)FONT_LEVELS;
+        }
+        *slot = palette_nearest(channel[0], channel[1], channel[2]);
+    }
+    return *slot;
 }
 
 static void framebuffer_fill_span(uint32_t index, uint32_t length,
@@ -565,13 +647,13 @@ void video_fill_circle(int32_t center_x, int32_t center_y, uint32_t radius,
     }
 }
 
-static void draw_cursor_bitmap(int32_t x, int32_t y, const uint8_t *pixels,
-                               uint32_t width, uint32_t height)
+/* Cursor com anti-aliasing: cinza + opacidade por pixel (0..255). Pixels
+ * opacos usam a cor mais proxima da paleta; os de borda sao misturados com
+ * o que ja esta na tela. */
+static void draw_cursor_bitmap(int32_t x, int32_t y, const uint8_t *grey,
+                               const uint8_t *alpha, uint32_t width,
+                               uint32_t height)
 {
-    if (pixels == 0) {
-        return;
-    }
-
     int32_t origin_x = x;
     int32_t origin_y = y;
     if (vbe_mode_active) {
@@ -580,19 +662,151 @@ static void draw_cursor_bitmap(int32_t x, int32_t y, const uint8_t *pixels,
     }
     for (uint32_t row = 0u; row < height; ++row) {
         for (uint32_t column = 0u; column < width; ++column) {
-            uint8_t color = pixels[row * width + column];
-            if (color != 0xffu) {
-                framebuffer_pixel(origin_x + (int32_t)column,
-                                  origin_y + (int32_t)row, color);
+            uint32_t offset = row * width + column;
+            uint32_t opacity = alpha[offset];
+            if (opacity == 0u) {
+                continue;
             }
+            int32_t px = origin_x + (int32_t)column;
+            int32_t py = origin_y + (int32_t)row;
+            if (opacity >= 255u) {
+                framebuffer_pixel(px, py, cursor_grey_index[grey[offset]]);
+                continue;
+            }
+            uint8_t below = framebuffer_pixel_read(px, py);
+            int32_t value = (int32_t)(grey[offset] * 252u / 255u);
+            int32_t channel[3];
+            for (uint32_t c = 0u; c < 3u; ++c) {
+                channel[c] = (value * (int32_t)opacity +
+                              (int32_t)gfx_palette[below][c] * 4 *
+                                  (int32_t)(255u - opacity) + 127) / 255;
+            }
+            framebuffer_pixel(px, py,
+                              palette_nearest(channel[0], channel[1],
+                                              channel[2]));
         }
     }
 }
 
 void video_draw_mouse_cursor(int32_t x, int32_t y)
 {
-    draw_cursor_bitmap(x, y, mouse_cursor_pixels,
+    draw_cursor_bitmap(x, y, mouse_cursor_grey, mouse_cursor_alpha,
                        MOUSE_CURSOR_WIDTH, MOUSE_CURSOR_HEIGHT);
+}
+
+/* ---- Icones dos aplicativos ------------------------------------------
+ * Bitmaps de 8 bits (RLE) ja compostos sobre a cor de fundo do desktop.
+ * Ao passar o mouse o icone e ampliado por interpolacao bilinear e
+ * guardado em cache (so e calculado uma vez por icone).
+ */
+static void icon_decode(const struct gfx_icon *icon, uint8_t *output)
+{
+    uint32_t position = 0u;
+    uint32_t total = (uint32_t)icon->width * icon->height;
+    for (uint32_t offset = 0u; offset + 1u < icon->size; offset += 2u) {
+        uint32_t count = icon->data[offset];
+        uint8_t value = icon->data[offset + 1u];
+        while (count != 0u && position < total) {
+            output[position++] = value;
+            --count;
+        }
+    }
+    while (position < total) {
+        output[position++] = GFX_BACKGROUND_INDEX;
+    }
+}
+
+static void icon_build_hover(uint32_t index)
+{
+    const uint32_t source = GFX_ICON_SIZE;
+    const uint32_t target = GFX_ICON_HOVER_SIZE;
+    uint8_t *output = icon_hover_cache[index];
+    icon_decode(&gfx_icons[index], icon_scratch);
+
+    for (uint32_t dy = 0u; dy < target; ++dy) {
+        int32_t fy = (((int32_t)(2u * dy + 1u) * (int32_t)source -
+                       (int32_t)target) * 128) / (int32_t)target;
+        if (fy < 0) {
+            fy = 0;
+        }
+        if (fy > (int32_t)(source - 1u) * 256) {
+            fy = (int32_t)(source - 1u) * 256;
+        }
+        uint32_t y0 = (uint32_t)fy >> 8;
+        uint32_t y1 = y0 + 1u < source ? y0 + 1u : y0;
+        uint32_t wy = (uint32_t)fy & 255u;
+        for (uint32_t dx = 0u; dx < target; ++dx) {
+            int32_t fx = (((int32_t)(2u * dx + 1u) * (int32_t)source -
+                           (int32_t)target) * 128) / (int32_t)target;
+            if (fx < 0) {
+                fx = 0;
+            }
+            if (fx > (int32_t)(source - 1u) * 256) {
+                fx = (int32_t)(source - 1u) * 256;
+            }
+            uint32_t x0 = (uint32_t)fx >> 8;
+            uint32_t x1 = x0 + 1u < source ? x0 + 1u : x0;
+            uint32_t wx = (uint32_t)fx & 255u;
+            uint8_t p00 = icon_scratch[y0 * source + x0];
+            uint8_t p10 = icon_scratch[y0 * source + x1];
+            uint8_t p01 = icon_scratch[y1 * source + x0];
+            uint8_t p11 = icon_scratch[y1 * source + x1];
+            uint8_t result;
+            if (p00 == p10 && p00 == p01 && p00 == p11) {
+                result = p00 == GFX_BACKGROUND_INDEX ?
+                         p00 : lighten_index[p00];
+            } else {
+                uint32_t w00 = (256u - wx) * (256u - wy);
+                uint32_t w10 = wx * (256u - wy);
+                uint32_t w01 = (256u - wx) * wy;
+                uint32_t w11 = wx * wy;
+                int32_t channel[3];
+                for (uint32_t c = 0u; c < 3u; ++c) {
+                    uint32_t mixed =
+                        w00 * gfx_palette[p00][c] + w10 * gfx_palette[p10][c] +
+                        w01 * gfx_palette[p01][c] + w11 * gfx_palette[p11][c];
+                    int32_t value = (int32_t)((mixed * 4u + 32768u) >> 16);
+                    channel[c] = value +
+                        ((252 - value) * (int32_t)ICON_HOVER_LIGHTEN) / 256;
+                }
+                result = palette_nearest(channel[0], channel[1], channel[2]);
+            }
+            output[dy * target + dx] = result;
+        }
+    }
+    icon_hover_ready[index] = 1u;
+}
+
+int video_draw_app_icon(uint32_t icon, int32_t center_x, int32_t center_y,
+                        int hover)
+{
+    if (!vbe_mode_active || icon >= GFX_ICON_COUNT) {
+        return 0;
+    }
+    int32_t device_center_x = center_x * 2;
+    int32_t device_center_y = (center_y * 12) / 5;
+    const uint8_t *pixels;
+    uint32_t size;
+    if (hover) {
+        if (!icon_hover_ready[icon]) {
+            icon_build_hover(icon);
+        }
+        pixels = icon_hover_cache[icon];
+        size = GFX_ICON_HOVER_SIZE;
+    } else {
+        icon_decode(&gfx_icons[icon], icon_scratch);
+        pixels = icon_scratch;
+        size = GFX_ICON_SIZE;
+    }
+    int32_t left = device_center_x - (int32_t)size / 2;
+    int32_t top = device_center_y - (int32_t)size / 2;
+    for (uint32_t row = 0u; row < size; ++row) {
+        for (uint32_t column = 0u; column < size; ++column) {
+            framebuffer_pixel(left + (int32_t)column, top + (int32_t)row,
+                              pixels[row * size + column]);
+        }
+    }
+    return 1;
 }
 
 /* ---- Texto (DejaVu Sans, bitmap 1 bpp proporcional) ------------------- */
@@ -641,15 +855,25 @@ static void draw_glyph(const struct font_face *face, int32_t x,
                        int32_t baseline, const struct font_glyph *glyph,
                        uint8_t color)
 {
-    uint32_t stride = ((uint32_t)glyph->width + 7u) / 8u;
-    const uint8_t *rows = face->bitmap + glyph->offset;
+    const uint8_t *data = face->bitmap + glyph->offset;
+    uint32_t index = 0u;
     for (uint32_t row = 0u; row < glyph->height; ++row) {
         for (uint32_t column = 0u; column < glyph->width; ++column) {
-            if ((rows[row * stride + column / 8u] &
-                 (0x80u >> (column % 8u))) != 0u) {
-                framebuffer_pixel(x + glyph->left + (int32_t)column,
-                                  baseline - glyph->top + (int32_t)row,
-                                  color);
+            uint8_t packed = data[index >> 1];
+            uint32_t level = (index & 1u) != 0u ?
+                             (uint32_t)(packed & 0x0fu) : (uint32_t)(packed >> 4);
+            ++index;
+            if (level == 0u) {
+                continue;
+            }
+            int32_t px = x + glyph->left + (int32_t)column;
+            int32_t py = baseline - glyph->top + (int32_t)row;
+            if (level >= FONT_LEVELS || color >= 16u) {
+                framebuffer_pixel(px, py, color);
+            } else {
+                uint8_t below = framebuffer_pixel_read(px, py);
+                framebuffer_pixel(px, py,
+                                  blend_text_color(color, below, level));
             }
         }
     }
