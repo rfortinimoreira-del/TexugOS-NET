@@ -12,6 +12,8 @@
 #include "rtl8192se.h"
 #include "rtl8192se_hw.h"
 #include "shell.h"
+#include "tef.h"
+#include "user_mode.h"
 
 #define COMMAND_BUFFER_SIZE 128u
 #define COMMAND_NAME_SIZE 16u
@@ -22,6 +24,24 @@
 static char command_buffer[COMMAND_BUFFER_SIZE];
 static char current_path[SHELL_PATH_SIZE] = "/";
 static uint32_t current_directory;
+static uint8_t tef_file_buffer[TEF_FILE_MAX_SIZE];
+static void (*idle_hook)(void);
+
+void shell_set_idle_hook(void (*hook)(void))
+{
+    idle_hook = hook;
+}
+
+/* Espera a proxima interrupcao. Quando o shell roda dentro do app Terminal
+ * do desktop, o gancho redesenha a tela para a interface nao congelar
+ * durante esperas longas (scan Wi-Fi, digitar senha, etc.). */
+static void shell_idle(void)
+{
+    if (idle_hook != 0) {
+        idle_hook();
+    }
+    __asm__ volatile ("sti; hlt");
+}
 
 static int string_equal(const char *left, const char *right)
 {
@@ -59,7 +79,7 @@ static void copy_string(char *destination, const char *source)
     *destination = '\0';
 }
 
-static void print_prompt(void)
+void shell_print_prompt(void)
 {
     console_write("texugos:");
     console_write(current_path);
@@ -72,7 +92,7 @@ static void read_command_line(char *buffer, uint32_t capacity)
     for (;;) {
         char character;
         if (!keyboard_read_character(&character)) {
-            __asm__ volatile ("sti; hlt");
+            shell_idle();
             continue;
         }
         if (character == '\n') {
@@ -101,7 +121,7 @@ static uint32_t read_secret_line(uint8_t *buffer, uint32_t capacity)
     for (;;) {
         char character;
         if (!keyboard_read_character(&character)) {
-            __asm__ volatile ("sti; hlt");
+            shell_idle();
             continue;
         }
         if (character == '\n') {
@@ -168,10 +188,39 @@ static int parse_command(char *line, char command[COMMAND_NAME_SIZE],
 
 static void print_help(void)
 {
-    console_write("Commands: help clear echo ls cd mkdir touch cat rm\n");
-    console_write("          reboot shutdown memory version processes mouse devices\n");
-    console_write("          desktop net dhcp dns ping\n");
-    console_write("          wifi scan|connect INDEX|SSID|disconnect|status\n");
+    console_write("Commands:\n");
+    console_write("  help clear echo ls cd mkdir touch\n");
+    console_write("  cat rm reboot shutdown memory\n");
+    console_write("  version processes mouse devices\n");
+    console_write("  desktop net dhcp dns ping texugo\n");
+    console_write("  run TEF_FILE\n");
+    console_write("  wifi scan | status | disconnect\n");
+    console_write("  wifi connect INDEX|SSID\n");
+}
+
+/* ASCII do texugo (comando `texugo`). Cada linha tem no maximo 38 colunas
+ * para caber na janela do Terminal do desktop. */
+static const char *const badger_art[] = {
+    "   .-+#+-.                  .-+#+-.",
+    "  +#'   '#+ .++########++. +#'   '#+",
+    "  ##     ##.+############+.##     ##",
+    "  '#+   +#'  ############  '#+   +#'",
+    "   '#####'.   ##########   .'#####'",
+    "    +####+.  o ######## o  .+####+",
+    "    +#####+.    ######    .+#####+",
+    "     +######.    ####    .######+",
+    "       .+#####.  ++++  .#####+.",
+    "          .+###+.    .+###+.",
+};
+
+static void print_badger(void)
+{
+    for (uint32_t row = 0u;
+         row < sizeof(badger_art) / sizeof(badger_art[0]); ++row) {
+        console_write(badger_art[row]);
+        console_write("\n");
+    }
+    console_write("      TexugOS 0.1.0 - badger approved.\n");
 }
 
 static void list_directory(void)
@@ -294,6 +343,50 @@ static void print_file(const char *name)
         console_write_character(contents[index]);
     }
     console_write("\n");
+}
+
+static void run_tef_file(const char *filename)
+{
+    uint32_t file_size = 0u;
+    struct tef_executable executable;
+    if (*filename == '\0' ||
+        !fat32_read_file(current_directory, filename, tef_file_buffer,
+                         sizeof(tef_file_buffer), &file_size)) {
+        console_write("Unable to read TEF file (maximum ");
+        console_write_u32(sizeof(tef_file_buffer));
+        console_write(" bytes).\n");
+        return;
+    }
+    if (!tef_parse(tef_file_buffer, file_size, &executable)) {
+        console_write("Invalid or unsupported TEF executable.\n");
+        return;
+    }
+
+    console_write("Application: ");
+    for (uint32_t index = 0u; index < executable.name_length; ++index) {
+        console_write_character((char)executable.name[index]);
+    }
+    console_write("\nLogo:\n");
+    for (uint32_t row = 0u; row < TEF_ICON_HEIGHT; ++row) {
+        for (uint32_t column = 0u; column < TEF_ICON_WIDTH; ++column) {
+            uint8_t pixel =
+                executable.icon_rows[row] & (0x80u >> column);
+            console_write_character(pixel != 0u ? '#' : '.');
+        }
+        console_write("\n");
+    }
+
+    uint32_t exit_code = 0u;
+    console_write("Program output: ");
+    if (!user_mode_execute(executable.binary, executable.binary_size,
+                           executable.entry_offset, &exit_code)) {
+        console_write("\nTEF program stopped after a CPU exception or "
+                      "could not be started.\n");
+        return;
+    }
+    console_write("\nTEF program exited with code ");
+    console_write_u32(exit_code);
+    console_write(".\n");
 }
 
 static void remove_entry(const char *name)
@@ -549,7 +642,7 @@ static enum rtl8192se_scan_state wait_for_wifi_scan(void)
     do {
         state = rtl8192se_scan_poll();
         if (state == RTL8192SE_SCAN_ACTIVE) {
-            __asm__ volatile ("sti; hlt");
+            shell_idle();
         }
     } while (state == RTL8192SE_SCAN_ACTIVE);
     return state;
@@ -653,7 +746,7 @@ static void wifi_command(const char *arguments)
             if (state == RTL8192SE_ASSOCIATION_AUTHENTICATING ||
                 state == RTL8192SE_ASSOCIATION_ASSOCIATING ||
                 state == RTL8192SE_ASSOCIATION_HANDSHAKING) {
-                __asm__ volatile ("sti; hlt");
+                shell_idle();
             }
         } while (state == RTL8192SE_ASSOCIATION_AUTHENTICATING ||
                  state == RTL8192SE_ASSOCIATION_ASSOCIATING ||
@@ -661,16 +754,35 @@ static void wifi_command(const char *arguments)
         if (state != RTL8192SE_ASSOCIATION_CONNECTED_OPEN &&
             state != RTL8192SE_ASSOCIATION_CONNECTED_WPA2) {
             console_write("Wi-Fi association or WPA2 handshake failed.\n");
-            switch (rtl8192se_association_last_failure()) {
+            enum rtl8192se_association_failure failure =
+                rtl8192se_association_last_failure();
+            switch (failure) {
             case RTL8192SE_ASSOCIATION_FAILURE_AUTH_TIMEOUT:
-                console_write("Failure detail: timed out waiting for "
-                              "802.11 authentication response.\n");
+            case RTL8192SE_ASSOCIATION_FAILURE_TX_STUCK:
+                console_write("  Authentication TX: ");
+                console_write_u32(
+                    rtl8192se_association_auth_tx_submission_count());
+                console_write(" queued, ");
+                console_write_u32(
+                    rtl8192se_association_auth_tx_dma_completion_count());
+                console_write(" descriptors returned by DMA.\n");
                 console_write("  RX during authentication: ");
                 console_write_u32(rtl8192se_association_rx_frame_count());
                 console_write(" frame(s), including ");
                 console_write_u32(
                     rtl8192se_association_auth_response_count());
                 console_write(" authentication-subtype frame(s).\n");
+                console_write("  RX descriptors discarded as invalid: ");
+                console_write_u32(
+                    rtl8192se_association_rx_invalid_descriptor_count());
+                console_write(".\n");
+                if (failure == RTL8192SE_ASSOCIATION_FAILURE_AUTH_TIMEOUT) {
+                    console_write("Failure detail: timed out waiting for "
+                                  "802.11 authentication response.\n");
+                } else {
+                    console_write("Failure detail: an authentication TX "
+                                  "descriptor remained device-owned.\n");
+                }
                 break;
             case RTL8192SE_ASSOCIATION_FAILURE_AUTH_REJECTED:
                 console_write("Failure detail: the access point rejected "
@@ -695,10 +807,6 @@ static void wifi_command(const char *arguments)
             case RTL8192SE_ASSOCIATION_FAILURE_TX:
                 console_write("Failure detail: could not transmit an "
                               "authentication or association frame.\n");
-                break;
-            case RTL8192SE_ASSOCIATION_FAILURE_TX_STUCK:
-                console_write("Failure detail: the authentication TX "
-                              "descriptor was not consumed by the device.\n");
                 break;
             case RTL8192SE_ASSOCIATION_FAILURE_NONE:
             default:
@@ -748,6 +856,9 @@ static void reboot_system(void)
 
     if (reset_requested == 0) {
         console_write("Keyboard controller reset is unavailable; system halted.\n");
+        for (uint32_t frame = 0u; frame < 4u; ++frame) {
+            shell_idle();
+        }
     }
     for (;;) {
         __asm__ volatile ("cli; hlt");
@@ -757,6 +868,9 @@ static void reboot_system(void)
 static void shutdown_system(void)
 {
     console_write("System halted; ACPI power-off is unavailable.\n");
+    for (uint32_t frame = 0u; frame < 4u; ++frame) {
+        shell_idle();
+    }
     for (;;) {
         __asm__ volatile ("cli; hlt");
     }
@@ -790,6 +904,8 @@ static void execute_command(char *line)
         create_file(arguments);
     } else if (string_equal(command, "cat")) {
         print_file(arguments);
+    } else if (string_equal(command, "run")) {
+        run_tef_file(arguments);
     } else if (string_equal(command, "rm")) {
         remove_entry(arguments);
     } else if (string_equal(command, "reboot")) {
@@ -823,7 +939,14 @@ static void execute_command(char *line)
     } else if (string_equal(command, "devices")) {
         list_pci_devices();
     } else if (string_equal(command, "desktop")) {
-        desktop_run();
+        if (desktop_is_running()) {
+            console_write("The desktop is already running.\n");
+        } else {
+            desktop_run();
+        }
+    } else if (string_equal(command, "texugo") ||
+               string_equal(command, "badger")) {
+        print_badger();
     } else if (string_equal(command, "net")) {
         print_network_status();
     } else if (string_equal(command, "wifi")) {
@@ -870,12 +993,17 @@ static void execute_command(char *line)
     }
 }
 
+void shell_execute_line(char *line)
+{
+    execute_command(line);
+}
+
 void shell_run(void)
 {
     current_directory = fat32_root_cluster();
     console_write("TexugOS shell ready. Type 'help'.\n");
     for (;;) {
-        print_prompt();
+        shell_print_prompt();
         read_command_line(command_buffer, sizeof(command_buffer));
         execute_command(command_buffer);
     }

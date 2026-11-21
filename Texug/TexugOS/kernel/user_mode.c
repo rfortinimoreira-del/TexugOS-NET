@@ -9,6 +9,7 @@
 #define USER_IDENTITY_LIMIT 0x01000000u
 #define USER_EXIT_SYSCALL 2u
 #define USER_TEST_SYSCALL 1u
+#define USER_WRITE_CHARACTER_SYSCALL 3u
 #define USER_TEST_RESULT 0x54455847u
 
 extern const uint8_t user_test_program_start[];
@@ -25,6 +26,9 @@ static volatile uint32_t fault_vector;
 static volatile uint32_t fault_error_code;
 static volatile uint32_t fault_address;
 static volatile uint32_t probe_address;
+static volatile uint32_t executable_active;
+static volatile uint32_t executable_faulted;
+static volatile uint32_t executable_exit_code;
 
 static void copy_program(uint8_t *destination, const uint8_t *start,
                          const uint8_t *end)
@@ -37,6 +41,24 @@ static void copy_program(uint8_t *destination, const uint8_t *start,
 
 uint32_t user_mode_handle_syscall(uint32_t number, uint32_t argument)
 {
+    if (executable_active != 0u) {
+        if (number == USER_EXIT_SYSCALL) {
+            executable_exit_code = argument;
+            executable_active = 0u;
+            user_mode_resume();
+        }
+        if (number == USER_WRITE_CHARACTER_SYSCALL) {
+            uint8_t character = (uint8_t)argument;
+            if ((character >= ' ' && character <= '~') ||
+                character == '\n' || character == '\r') {
+                console_write_character((char)character);
+            }
+            return 0u;
+        }
+        executable_exit_code = 1u;
+        executable_active = 0u;
+        user_mode_resume();
+    }
     if (number == USER_TEST_SYSCALL && syscall_count == 0u) {
         ++syscall_count;
         return USER_TEST_RESULT;
@@ -55,11 +77,68 @@ void user_mode_abort(uint32_t vector, uint32_t error_code)
     fault_vector = vector;
     fault_error_code = error_code;
     fault_address = paging_fault_address();
+    if (executable_active != 0u) {
+        executable_faulted = 1u;
+        executable_active = 0u;
+        user_mode_resume();
+    }
     test_result = vector == 14u && fault_address == probe_address &&
                           (error_code & 0x07u) == 0x05u
                       ? 0u
                       : 1u;
     user_mode_resume();
+}
+
+int user_mode_execute(const uint8_t *binary, uint32_t binary_size,
+                      uint32_t entry_offset, uint32_t *exit_code)
+{
+    if (binary == 0 || exit_code == 0 || binary_size == 0u ||
+        binary_size > USER_PAGE_SIZE || entry_offset >= binary_size) {
+        return 0;
+    }
+
+    uint32_t code_frame = frame_allocate_below(USER_IDENTITY_LIMIT);
+    uint32_t stack_frame = frame_allocate_below(USER_IDENTITY_LIMIT);
+    if (code_frame == FRAME_INVALID || stack_frame == FRAME_INVALID) {
+        if (code_frame != FRAME_INVALID) {
+            (void)frame_free(code_frame);
+        }
+        if (stack_frame != FRAME_INVALID) {
+            (void)frame_free(stack_frame);
+        }
+        return 0;
+    }
+
+    uint8_t *code = (uint8_t *)(uintptr_t)code_frame;
+    for (uint32_t index = 0u; index < USER_PAGE_SIZE; ++index) {
+        code[index] = index < binary_size ? binary[index] : 0u;
+    }
+    if (!paging_set_user_page(code_frame, 1, 0)) {
+        (void)frame_free(code_frame);
+        (void)frame_free(stack_frame);
+        return 0;
+    }
+    if (!paging_set_user_page(stack_frame, 1, 1)) {
+        (void)paging_set_user_page(code_frame, 0, 0);
+        (void)frame_free(code_frame);
+        (void)frame_free(stack_frame);
+        return 0;
+    }
+
+    executable_faulted = 0u;
+    executable_exit_code = 1u;
+    executable_active = 1u;
+    user_mode_enter(code_frame + entry_offset,
+                    stack_frame + USER_PAGE_SIZE - 16u, 0u);
+    executable_active = 0u;
+    *exit_code = executable_exit_code;
+
+    int code_protected = paging_set_user_page(code_frame, 0, 0);
+    int stack_protected = paging_set_user_page(stack_frame, 0, 0);
+    int code_released = frame_free(code_frame);
+    int stack_released = frame_free(stack_frame);
+    return executable_faulted == 0u && code_protected && stack_protected &&
+           code_released && stack_released;
 }
 
 int user_mode_self_test(void)
@@ -140,6 +219,19 @@ int user_mode_self_test(void)
         !code_released || !stack_released) {
         console_write("Ring 3: user page cleanup failed.\n");
         return 0;
+    }
+    static const uint8_t exit_program[] = {
+        0xb8u, 0x02u, 0x00u, 0x00u, 0x00u,
+        0x31u, 0xdbu,
+        0xcdu, 0x80u,
+    };
+    uint32_t exit_code = UINT32_MAX;
+    if (passed &&
+        (!user_mode_execute(exit_program, sizeof(exit_program), 0u,
+                            &exit_code) ||
+         exit_code != 0u)) {
+        console_write("Ring 3: executable loader self-test failed.\n");
+        passed = 0;
     }
     return passed;
 }

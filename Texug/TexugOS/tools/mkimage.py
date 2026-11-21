@@ -14,19 +14,33 @@ FAT_ROOT_CLUSTER = 2
 
 
 def main() -> None:
-    if len(sys.argv) not in (4, 6) or (
-        len(sys.argv) == 6 and sys.argv[4] != "--rtl8192se-firmware"
-    ):
+    if len(sys.argv) < 4:
         raise SystemExit(
             "usage: mkimage.py BOOT_SECTOR PAYLOAD OUTPUT "
-            "[--rtl8192se-firmware FILE]"
+            "[--rtl8192se-firmware FILE] [--tef-file FILE]"
         )
 
     boot_path, payload_path, output_path = map(pathlib.Path, sys.argv[1:4])
     boot = boot_path.read_bytes()
     payload = payload_path.read_bytes()
-    firmware_path = pathlib.Path(sys.argv[5]) if len(sys.argv) == 6 else None
+    firmware_path = None
+    tef_path = None
+    options = sys.argv[4:]
+    option_index = 0
+    while option_index < len(options):
+        if option_index + 1 >= len(options):
+            raise SystemExit("image option requires a file path")
+        option = options[option_index]
+        path = pathlib.Path(options[option_index + 1])
+        if option == "--rtl8192se-firmware" and firmware_path is None:
+            firmware_path = path
+        elif option == "--tef-file" and tef_path is None:
+            tef_path = path
+        else:
+            raise SystemExit(f"unknown or duplicate image option: {option}")
+        option_index += 2
     firmware = firmware_path.read_bytes() if firmware_path is not None else b""
+    tef_file = tef_path.read_bytes() if tef_path is not None else b""
 
     if len(boot) != SECTOR_SIZE or boot[510:512] != b"\x55\xaa":
         raise SystemExit("boot sector must be exactly 512 bytes and end in 0x55aa")
@@ -38,11 +52,15 @@ def main() -> None:
         raise SystemExit("RTL8192SE firmware must not exceed 90000 bytes")
     if firmware_path is not None and not firmware:
         raise SystemExit("RTL8192SE firmware file must not be empty")
+    if tef_path is not None and not tef_file:
+        raise SystemExit("TEF executable file must not be empty")
 
     partition_sectors = IMAGE_SECTORS - PARTITION_START
     firmware_cluster_count = (
         (len(firmware) + SECTOR_SIZE - 1) // SECTOR_SIZE
     )
+    tef_cluster_count = (len(tef_file) + SECTOR_SIZE - 1) // SECTOR_SIZE
+    allocated_file_clusters = firmware_cluster_count + tef_cluster_count
     fat_sectors = 1
     while True:
         cluster_count = (
@@ -100,9 +118,9 @@ def main() -> None:
     struct.pack_into("<I", fs_info, 0, 0x41615252)
     struct.pack_into("<I", fs_info, 484, 0x61417272)
     struct.pack_into(
-        "<I", fs_info, 488, cluster_count - 1 - firmware_cluster_count
+        "<I", fs_info, 488, cluster_count - 1 - allocated_file_clusters
     )
-    struct.pack_into("<I", fs_info, 492, 3 + firmware_cluster_count)
+    struct.pack_into("<I", fs_info, 492, 3 + allocated_file_clusters)
     struct.pack_into("<I", fs_info, 508, 0xAA550000)
     image[volume_start + SECTOR_SIZE : volume_start + 2 * SECTOR_SIZE] = fs_info
     image[volume_start + 7 * SECTOR_SIZE : volume_start + 8 * SECTOR_SIZE] = fs_info
@@ -111,33 +129,46 @@ def main() -> None:
     struct.pack_into("<III", fat, 0, 0x0FFFFFF8, 0xFFFFFFFF, 0x0FFFFFFF)
     fat_start = PARTITION_START + FAT_RESERVED_SECTORS
     fat_bytes = fat_sectors * SECTOR_SIZE
+    if allocated_file_clusters + FAT_ROOT_CLUSTER >= cluster_count + 2:
+        raise SystemExit("embedded files do not fit in the FAT32 volume")
+
+    data_start = PARTITION_START + FAT_RESERVED_SECTORS + FAT_COUNT * fat_sectors
+    root_offset = data_start * SECTOR_SIZE
+    first_cluster = 3
+    root_slot = 0
+    embedded_files = []
     if firmware:
-        if firmware_cluster_count + FAT_ROOT_CLUSTER >= cluster_count + 2:
-            raise SystemExit("RTL8192SE firmware does not fit in the FAT32 volume")
+        embedded_files.append((b"RTL8192 BIN", firmware))
+    if tef_file:
+        embedded_files.append((b"HELLO   TEF", tef_file))
 
-        data_start = PARTITION_START + FAT_RESERVED_SECTORS + FAT_COUNT * fat_sectors
-        root_offset = data_start * SECTOR_SIZE
+    for short_name, contents in embedded_files:
+        file_cluster_count = (
+            len(contents) + SECTOR_SIZE - 1
+        ) // SECTOR_SIZE
         entry = bytearray(32)
-        entry[0:11] = b"RTL8192 BIN"
+        entry[0:11] = short_name
         entry[11] = 0x20
-        first_cluster = 3
         struct.pack_into("<H", entry, 26, first_cluster)
-        struct.pack_into("<I", entry, 28, len(firmware))
-        image[root_offset : root_offset + len(entry)] = entry
+        struct.pack_into("<I", entry, 28, len(contents))
+        entry_offset = root_offset + root_slot * len(entry)
+        image[entry_offset : entry_offset + len(entry)] = entry
+        root_slot += 1
 
-        for index in range(firmware_cluster_count):
+        for index in range(file_cluster_count):
             cluster = first_cluster + index
             next_cluster = (
                 cluster + 1
-                if index + 1 < firmware_cluster_count
+                if index + 1 < file_cluster_count
                 else 0x0FFFFFFF
             )
             struct.pack_into("<I", fat, cluster * 4, next_cluster)
             source_start = index * SECTOR_SIZE
-            chunk = firmware[source_start : source_start + SECTOR_SIZE]
+            chunk = contents[source_start : source_start + SECTOR_SIZE]
             data_sector = data_start + cluster - FAT_ROOT_CLUSTER
             data_offset = data_sector * SECTOR_SIZE
             image[data_offset : data_offset + len(chunk)] = chunk
+        first_cluster += file_cluster_count
 
     fat_offset = fat_start * SECTOR_SIZE
     image[fat_offset : fat_offset + fat_bytes] = fat

@@ -34,6 +34,7 @@
 #define RTL8192SE_ASSOCIATION_TIMEOUT_TICKS 300u
 #define RTL8192SE_AUTH_RETRY_INTERVAL_TICKS 50u
 #define RTL8192SE_AUTH_RETRY_LIMIT 3u
+#define RTL8192SE_AUTH_TX_DESCRIPTOR_COUNT (RTL8192SE_AUTH_RETRY_LIMIT + 1u)
 #define RTL8192SE_SCAN_FIRST_CHANNEL 1u
 #define RTL8192SE_SCAN_LAST_CHANNEL 13u
 #define RTL8192SE_SCAN_DWELL_TICKS 50u
@@ -53,6 +54,12 @@ static struct wpa2_handshake wpa2_session;
 static enum rtl8192se_association_failure association_failure;
 static uint32_t association_rx_frames;
 static uint32_t association_auth_responses;
+static uint32_t association_auth_tx_submissions;
+static uint32_t association_auth_tx_dma_completions;
+static uint32_t association_rx_invalid_descriptors;
+static uint8_t *association_auth_tx_descriptors[
+    RTL8192SE_AUTH_TX_DESCRIPTOR_COUNT];
+static uint32_t association_auth_tx_descriptor_count;
 static uint8_t *last_management_tx_descriptor;
 static uint64_t pairwise_tx_packet_number;
 static uint64_t group_tx_packet_number;
@@ -110,6 +117,57 @@ static uint32_t read_le32(const uint8_t *bytes)
 {
     return (uint32_t)bytes[0] | ((uint32_t)bytes[1] << 8) |
            ((uint32_t)bytes[2] << 16) | ((uint32_t)bytes[3] << 24);
+}
+
+static uint32_t read_volatile_le32(const volatile uint8_t *bytes)
+{
+    return (uint32_t)bytes[0] | ((uint32_t)bytes[1] << 8) |
+           ((uint32_t)bytes[2] << 16) | ((uint32_t)bytes[3] << 24);
+}
+
+static void rtl8192se_reset_association_diagnostics(void)
+{
+    association_rx_frames = 0u;
+    association_auth_responses = 0u;
+    association_auth_tx_submissions = 0u;
+    association_auth_tx_dma_completions = 0u;
+    association_rx_invalid_descriptors = 0u;
+    association_auth_tx_descriptor_count = 0u;
+    for (uint32_t index = 0u; index < RTL8192SE_AUTH_TX_DESCRIPTOR_COUNT;
+         ++index) {
+        association_auth_tx_descriptors[index] = 0;
+    }
+}
+
+static void rtl8192se_record_auth_tx_submission(void)
+{
+    if (last_management_tx_descriptor == 0 ||
+        association_auth_tx_descriptor_count >=
+            RTL8192SE_AUTH_TX_DESCRIPTOR_COUNT) {
+        return;
+    }
+    association_auth_tx_descriptors[association_auth_tx_descriptor_count++] =
+        last_management_tx_descriptor;
+    ++association_auth_tx_submissions;
+}
+
+static int rtl8192se_update_auth_tx_completions(void)
+{
+    int pending = 0;
+    for (uint32_t index = 0u;
+         index < association_auth_tx_descriptor_count; ++index) {
+        uint8_t *descriptor = association_auth_tx_descriptors[index];
+        if (descriptor == 0) {
+            continue;
+        }
+        if ((read_volatile_le32(descriptor) & (1u << 31)) != 0u) {
+            pending = 1;
+            continue;
+        }
+        association_auth_tx_descriptors[index] = 0;
+        ++association_auth_tx_dma_completions;
+    }
+    return pending;
 }
 
 int rtl8192se_build_command_ring(uint8_t *ring, uint32_t physical_address,
@@ -619,6 +677,12 @@ int rtl8192se_receive_80211_frame(uint8_t *frame, uint32_t frame_capacity,
         int frame_valid = rtl8192se_rx_copy_frame(
             descriptor, buffer, RTL8192SE_RX_BUFFER_SIZE, frame,
             frame_capacity, &received_length);
+        if (!frame_valid &&
+            (association_state == RTL8192SE_ASSOCIATION_AUTHENTICATING ||
+             association_state == RTL8192SE_ASSOCIATION_ASSOCIATING ||
+             association_state == RTL8192SE_ASSOCIATION_HANDSHAKING)) {
+            ++association_rx_invalid_descriptors;
+        }
         int end_of_ring = index + 1u == RTL8192SE_RX_RING_COUNT;
         if (!rtl8192se_rearm_rx_descriptor(
                 descriptor, rx_mpdu_buffer_frames[index],
@@ -847,6 +911,7 @@ int rtl8192se_open_association_start(
     }
 
     rtl8192se_mark_disconnected();
+    rtl8192se_reset_association_diagnostics();
     if (!rtl8192se_set_current_channel(network->channel) ||
         !rtl8192se_build_open_auth_request(
             network->bssid, adapter_status.mac_address,
@@ -856,6 +921,7 @@ int rtl8192se_open_association_start(
         association_state = RTL8192SE_ASSOCIATION_FAILED;
         return 0;
     }
+    rtl8192se_record_auth_tx_submission();
     association_request_sequence = management_sequence_number;
     for (uint32_t index = 0u; index < 6u; ++index) {
         associated_bssid[index] = network->bssid[index];
@@ -871,8 +937,6 @@ int rtl8192se_open_association_start(
     association_retry_count = 0u;
     association_retry_deadline =
         pit_ticks_read() + RTL8192SE_AUTH_RETRY_INTERVAL_TICKS;
-    association_rx_frames = 0u;
-    association_auth_responses = 0u;
     association_state = RTL8192SE_ASSOCIATION_AUTHENTICATING;
     return 1;
 }
@@ -895,6 +959,7 @@ int rtl8192se_wpa2_association_start(
     }
 
     rtl8192se_mark_disconnected();
+    rtl8192se_reset_association_diagnostics();
     if (!wpa2_handshake_begin(
             &wpa2_session, passphrase, passphrase_length,
             network->ssid, network->ssid_length, network->bssid,
@@ -909,6 +974,7 @@ int rtl8192se_wpa2_association_start(
         association_state = RTL8192SE_ASSOCIATION_FAILED;
         return 0;
     }
+    rtl8192se_record_auth_tx_submission();
     association_request_sequence = management_sequence_number;
     for (uint32_t index = 0u; index < 6u; ++index) {
         associated_bssid[index] = network->bssid[index];
@@ -925,8 +991,6 @@ int rtl8192se_wpa2_association_start(
     association_retry_count = 0u;
     association_retry_deadline =
         pit_ticks_read() + RTL8192SE_AUTH_RETRY_INTERVAL_TICKS;
-    association_rx_frames = 0u;
-    association_auth_responses = 0u;
     association_state = RTL8192SE_ASSOCIATION_AUTHENTICATING;
     return 1;
 }
@@ -938,6 +1002,9 @@ enum rtl8192se_association_state rtl8192se_open_association_poll(void)
         association_state != RTL8192SE_ASSOCIATION_HANDSHAKING) {
         return association_state;
     }
+    if (association_state == RTL8192SE_ASSOCIATION_AUTHENTICATING) {
+        (void)rtl8192se_update_auth_tx_completions();
+    }
     if ((int32_t)(pit_ticks_read() - association_deadline) >= 0) {
         enum rtl8192se_association_failure failure =
             association_state == RTL8192SE_ASSOCIATION_AUTHENTICATING
@@ -946,8 +1013,7 @@ enum rtl8192se_association_state rtl8192se_open_association_poll(void)
                 ? RTL8192SE_ASSOCIATION_FAILURE_ASSOC_TIMEOUT
                 : RTL8192SE_ASSOCIATION_FAILURE_WPA2_TIMEOUT;
         if (association_state == RTL8192SE_ASSOCIATION_AUTHENTICATING &&
-            last_management_tx_descriptor != 0 &&
-            (read_le32(last_management_tx_descriptor) & (1u << 31)) != 0u) {
+            rtl8192se_update_auth_tx_completions()) {
             failure = RTL8192SE_ASSOCIATION_FAILURE_TX_STUCK;
         }
         rtl8192se_mark_disconnected();
@@ -977,6 +1043,7 @@ enum rtl8192se_association_state rtl8192se_open_association_poll(void)
             association_state = RTL8192SE_ASSOCIATION_FAILED;
             return association_state;
         }
+        rtl8192se_record_auth_tx_submission();
         ++association_retry_count;
         association_retry_deadline += RTL8192SE_AUTH_RETRY_INTERVAL_TICKS;
     }
@@ -1102,6 +1169,21 @@ uint32_t rtl8192se_association_rx_frame_count(void)
 uint32_t rtl8192se_association_auth_response_count(void)
 {
     return association_auth_responses;
+}
+
+uint32_t rtl8192se_association_auth_tx_submission_count(void)
+{
+    return association_auth_tx_submissions;
+}
+
+uint32_t rtl8192se_association_auth_tx_dma_completion_count(void)
+{
+    return association_auth_tx_dma_completions;
+}
+
+uint32_t rtl8192se_association_rx_invalid_descriptor_count(void)
+{
+    return association_rx_invalid_descriptors;
 }
 
 static int rtl8192se_set_current_channel(uint8_t channel)

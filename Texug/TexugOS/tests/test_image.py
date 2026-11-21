@@ -120,6 +120,53 @@ class BootImageTests(unittest.TestCase):
         free_clusters = struct.unpack_from("<I", image, fs_info_offset + 488)[0]
         self.assertEqual(free_clusters, cluster_count - 1 - len(seen))
 
+    def test_tef_sample_is_added_to_fat32(self):
+        executable = b"TEF\0" + bytes(range(60))
+        with tempfile.TemporaryDirectory(prefix="texugos-tef-image-") as directory:
+            temp = pathlib.Path(directory)
+            boot_path = temp / "boot.bin"
+            payload_path = temp / "payload.bin"
+            tef_path = temp / "hello.tef"
+            output_path = temp / "image.img"
+            boot_path.write_bytes(self.image[:SECTOR_SIZE])
+            payload_path.write_bytes(
+                self.image[
+                    SECTOR_SIZE : (BOOT_PAYLOAD_SECTORS + 1) * SECTOR_SIZE
+                ]
+            )
+            tef_path.write_bytes(executable)
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(pathlib.Path(__file__).parents[1] / "tools" / "mkimage.py"),
+                    str(boot_path),
+                    str(payload_path),
+                    str(output_path),
+                    "--tef-file",
+                    str(tef_path),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            image = output_path.read_bytes()
+        volume_start = 2048 * SECTOR_SIZE
+        reserved_sectors = struct.unpack_from("<H", image, volume_start + 14)[0]
+        fat_count = image[volume_start + 16]
+        fat_sectors = struct.unpack_from("<I", image, volume_start + 36)[0]
+        data_start = 2048 + reserved_sectors + fat_count * fat_sectors
+        root_offset = data_start * SECTOR_SIZE
+        entry = image[root_offset : root_offset + 32]
+        self.assertEqual(entry[:11], b"HELLO   TEF")
+        self.assertEqual(struct.unpack_from("<I", entry, 28)[0], len(executable))
+
+        cluster = struct.unpack_from("<H", entry, 26)[0]
+        first_fat = (2048 + reserved_sectors) * SECTOR_SIZE
+        data_offset = (data_start + cluster - 2) * SECTOR_SIZE
+        stored = image[data_offset : data_offset + len(executable)]
+        self.assertEqual(stored, executable)
+
 
 if __name__ == "__main__":
     unittest.main()

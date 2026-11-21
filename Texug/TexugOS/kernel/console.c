@@ -8,6 +8,14 @@
 #define VGA_COLOR 0x0fu
 
 static uint32_t cursor;
+static void (*redirect_put)(char);
+static void (*redirect_clear)(void);
+
+void console_redirect(void (*put)(char), void (*clear)(void))
+{
+    redirect_put = put;
+    redirect_clear = clear;
+}
 
 static void scroll_if_needed(void)
 {
@@ -27,6 +35,10 @@ static void scroll_if_needed(void)
 
 static void put_character(char character)
 {
+    if (redirect_put != 0) {
+        redirect_put(character);
+        return;
+    }
     if (character == '\n') {
         cursor = ((cursor / VGA_WIDTH) + 1u) * VGA_WIDTH;
         scroll_if_needed();
@@ -46,6 +58,10 @@ static void put_character(char character)
 
 void console_clear(void)
 {
+    if (redirect_clear != 0) {
+        redirect_clear();
+        return;
+    }
     for (uint32_t index = 0; index < VGA_WIDTH * VGA_HEIGHT; ++index) {
         VGA_MEMORY[index] = (uint16_t)((VGA_COLOR << 8) | ' ');
     }

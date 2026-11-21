@@ -7,7 +7,7 @@ XORRISO ?= xorriso
 BUILD := build
 RTL8192SE_FIRMWARE ?= $(wildcard $(BUILD)/rtl8192sefw.bin)
 RTL8192SE_FIRMWARE_ARG = $(if $(strip $(RTL8192SE_FIRMWARE)),--rtl8192se-firmware "$(RTL8192SE_FIRMWARE)")
-BIOS_DISK ?= 1
+BIOS_DISK ?= 0
 
 CFLAGS := -m32 -std=c11 -O2 -Wall -Wextra -Werror -ffreestanding \
 	-fno-pie -fno-pic -fno-stack-protector -fno-builtin
@@ -130,6 +130,10 @@ $(BUILD)/test_secure_random: tests/test_secure_random.c \
 	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -Inetwork \
 		-o $@ tests/test_secure_random.c network/secure_random.c
 
+$(BUILD)/test_tef: tests/test_tef.c kernel/tef.c kernel/tef.h | $(BUILD)
+	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -Ikernel \
+		-o $@ tests/test_tef.c kernel/tef.c
+
 $(BUILD)/test_rtl8192se_probe: tests/test_rtl8192se_probe.c \
 		drivers/rtl8192se.c drivers/rtl8192se.h \
 		drivers/rtl8192se_hw.c drivers/rtl8192se_hw.h \
@@ -194,6 +198,9 @@ $(BUILD)/shell.o: shell/shell.c | $(BUILD)
 $(BUILD)/desktop.o: desktop/desktop.c | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
 
+$(BUILD)/terminal.o: desktop/terminal.c desktop/terminal.h | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
+
 $(BUILD)/desktop_apps.o: CFLAGS += -Os
 
 $(BUILD)/desktop_apps.o: desktop/apps.c | $(BUILD)
@@ -219,6 +226,20 @@ $(BUILD)/interrupt_stubs.o: kernel/interrupt_stubs.S | $(BUILD)
 $(BUILD)/user_mode_asm.o: kernel/user_mode.S | $(BUILD)
 	$(AS) $(ASFLAGS) -o $@ $<
 
+$(BUILD)/tef.o: kernel/tef.c kernel/tef.h | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
+
+$(BUILD)/hello_tef.o: examples/hello_tef.S | $(BUILD)
+	$(AS) $(ASFLAGS) -o $@ $<
+
+$(BUILD)/hello_tef.bin: $(BUILD)/hello_tef.o
+	$(OBJCOPY) -O binary -j .text $< $@
+
+$(BUILD)/HELLO.TEF: $(BUILD)/hello_tef.bin tools/mktef.py
+	$(PYTHON) tools/mktef.py --name "Hello TexugOS" \
+		--icon 3c7e5a5a7e3c1818 --binary $(BUILD)/hello_tef.bin \
+		--output $@
+
 $(BUILD)/bios_disk_asm.o: drivers/bios_disk.S | $(BUILD)
 	$(AS) $(ASFLAGS) -o $@ $<
 
@@ -237,7 +258,8 @@ $(BUILD)/payload.elf: $(BUILD)/stage2.o $(BUILD)/interrupt_stubs.o \
 		$(BUILD)/wpa2_handshake.o $(BUILD)/wpa2_ccmp_frame.o \
 		$(BUILD)/secure_random.o \
 		$(BUILD)/video.o $(BUILD)/desktop.o \
-		$(BUILD)/desktop_apps.o $(BUILD)/arena.o $(BUILD)/snake.o \
+		$(BUILD)/desktop_apps.o $(BUILD)/terminal.o $(BUILD)/tef.o \
+		$(BUILD)/arena.o $(BUILD)/snake.o \
 		$(BUILD)/tetris.o $(BUILD)/paint.o $(BUILD)/ata.o \
 		$(BUILD)/bios_disk.o $(BUILD)/bios_disk_asm.o $(BUILD)/ahci.o \
 		$(BUILD)/bios_video.o $(BUILD)/fat32.o $(BUILD)/shell.o \
@@ -250,15 +272,17 @@ $(BUILD)/payload.elf: $(BUILD)/stage2.o $(BUILD)/interrupt_stubs.o \
 $(BUILD)/payload.bin: $(BUILD)/payload.elf
 	$(OBJCOPY) -O binary $< $@
 
-$(BUILD)/texugos.img: $(BUILD)/boot.bin $(BUILD)/payload.bin tools/mkimage.py \
-		$(RTL8192SE_FIRMWARE)
+$(BUILD)/texugos.img: $(BUILD)/boot.bin $(BUILD)/payload.bin \
+		$(BUILD)/HELLO.TEF tools/mkimage.py $(RTL8192SE_FIRMWARE)
 	$(PYTHON) tools/mkimage.py $(BUILD)/boot.bin $(BUILD)/payload.bin $@ \
-		$(RTL8192SE_FIRMWARE_ARG)
+		$(if $(strip $(RTL8192SE_FIRMWARE)),--rtl8192se-firmware "$(RTL8192SE_FIRMWARE)") \
+		--tef-file $(BUILD)/HELLO.TEF
 
 $(BUILD)/texugos-hp-g42.img: $(BUILD)/boot.bin $(BUILD)/payload.bin \
-		tools/mkimage.py $(RTL8192SE_FIRMWARE)
+		$(BUILD)/HELLO.TEF tools/mkimage.py $(RTL8192SE_FIRMWARE)
 	$(PYTHON) tools/mkimage.py $(BUILD)/boot.bin $(BUILD)/payload.bin $@ \
-		$(RTL8192SE_FIRMWARE_ARG)
+		$(if $(strip $(RTL8192SE_FIRMWARE)),--rtl8192se-firmware "$(RTL8192SE_FIRMWARE)") \
+		--tef-file $(BUILD)/HELLO.TEF
 
 hp-g42: $(BUILD)/texugos-hp-g42.img
 
@@ -270,13 +294,15 @@ iso: $(BUILD)/texugos.iso
 
 test: all $(BUILD)/test_rtl8192se_firmware $(BUILD)/test_wpa2_crypto \
 		$(BUILD)/test_wpa2_handshake $(BUILD)/test_wpa2_ccmp_frame \
-		$(BUILD)/test_secure_random $(BUILD)/test_rtl8192se_probe
+		$(BUILD)/test_secure_random $(BUILD)/test_rtl8192se_probe \
+		$(BUILD)/test_tef
 	$(BUILD)/test_rtl8192se_firmware
 	$(BUILD)/test_wpa2_crypto
 	$(BUILD)/test_wpa2_handshake
 	$(BUILD)/test_wpa2_ccmp_frame
 	$(BUILD)/test_secure_random
 	$(BUILD)/test_rtl8192se_probe
+	$(BUILD)/test_tef
 	TEXUGOS_IMAGE=$(BUILD)/texugos.img $(PYTHON) -m unittest discover -s tests -v
 
 test-iso: $(BUILD)/texugos.iso

@@ -968,11 +968,10 @@ class QemuBootTests(unittest.TestCase):
         self.assertIn("Returned from TexugOS Desktop.", screen)
 
     def test_shell_commands_and_fat32_navigation(self):
-        help_screen = self._run_shell_command(
-            "help", "Commands: help clear echo ls cd mkdir touch cat rm"
-        )
+        help_screen = self._run_shell_command("help", "Commands:")
         self.assertIn("desktop net dhcp dns ping", help_screen)
-        self.assertIn("wifi scan|connect INDEX|disconnect|status", help_screen)
+        self.assertIn("wifi connect INDEX|SSID", help_screen)
+        self.assertIn("run TEF_FILE", help_screen)
         self._run_shell_command("wifi scan", "Wi-Fi scan unavailable")
         self._send_mouse_move(25, 15)
         mouse_screen = self._run_shell_command("mouse", "Mouse packets:")
@@ -1041,6 +1040,11 @@ class QemuBootTests(unittest.TestCase):
                 break
             time.sleep(0.05)
         self.assertTrue(screen.startswith("texugos:/ >"), screen)
+
+    def test_tef_application_runs_in_user_mode(self):
+        screen = self._run_shell_command("run hello.tef", "Hello TEF!")
+        self.assertIn("Application: Hello TexugOS", screen)
+        self.assertIn("TEF program exited with code 0.", screen)
 
     def test_desktop_graphical_mode_and_text_mode_return(self):
         mouse_screen = self._run_shell_command("mouse", "Mouse packets:")

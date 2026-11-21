@@ -11,10 +11,11 @@
 #include "pci.h"
 #include "pit.h"
 #include "snake.h"
+#include "terminal.h"
 #include "tetris.h"
 #include "video.h"
 
-#define APP_COUNT 8u
+#define APP_COUNT 9u
 #define FILE_CAPACITY 64u
 #define FILE_PREVIEW_SIZE 256u
 #define NOTEPAD_NAME_SIZE 48u
@@ -704,6 +705,7 @@ void desktop_apps_initialize(void)
     snake_initialize();
     tetris_initialize();
     paint_initialize();
+    terminal_initialize();
     browser_input_length = 0u;
     browser_input[0] = '\0';
     browser_line_count = 0u;
@@ -734,8 +736,10 @@ void desktop_app_draw(uint32_t index, int32_t x, int32_t y,
         snake_draw(x, y, width, height);
     } else if (index == 6u) {
         tetris_draw(x, y, width, height);
-    } else {
+    } else if (index == 7u) {
         paint_draw(x, y, width, height);
+    } else {
+        terminal_draw(x, y, width, height);
     }
 }
 
@@ -747,6 +751,10 @@ void desktop_app_handle_key(uint32_t index, char key)
     }
     if (index == 3u) {
         arena_handle_key(key);
+        return;
+    }
+    if (index == 8u) {
+        terminal_handle_key(key);
         return;
     }
     if (index == 0u) {
@@ -798,6 +806,8 @@ void desktop_app_handle_pointer(uint32_t index, int32_t x, int32_t y,
 {
     if (index == 7u) {
         paint_handle_pointer(x, y, buttons);
+    } else if (index == 8u) {
+        terminal_handle_pointer(x, y, buttons);
     }
 }
 
@@ -824,6 +834,10 @@ void desktop_app_handle_click(uint32_t index, int32_t x, int32_t y,
             notepad_name_focused = 0u;
             notepad_set_status("UNSAVED CHANGES", 14u);
         }
+        return;
+    }
+    if (index == 8u) {
+        terminal_handle_click(x - 3, y - 17);
         return;
     }
     if (index == 7u) {

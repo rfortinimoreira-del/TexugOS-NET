@@ -32,6 +32,29 @@ keyboard and mouse IRQ
 handlers, and an interactive text shell with
 `help`, `clear`, `echo`, `ls`, `cd`, `mkdir`, `touch`, `cat`, `rm`, `reboot`,
 `shutdown`, `memory`, `version`, `processes`, and `mouse` commands.
+The shell also runs TEF applications with `run FILE.TEF`; the disk image
+contains a small `HELLO.TEF` demonstration.
+
+### Texug Executable Format (TEF)
+
+`.tef` packages contain a `TEF\0` signature, version 1, an ASCII app name, an
+8x8 one-bit logo, and a flat 32-bit x86 binary of up to 4096 bytes. The entry
+offset selects its first instruction. Applications run in ring 3 with a
+separate writable stack and read-only code page. `int 0x80` syscall 2 exits
+with the value in EBX; syscall 3 prints the low byte of EBX when it is a
+printable character or newline. Other syscalls terminate the app. This first
+version does not load ELF, provide relocations, or expose general OS services.
+
+Build a TEF from a raw binary with:
+
+```sh
+python3 tools/mktef.py --name "My App" --binary app.bin \
+  --icon 3c7e5a5a7e3c1818 --output MYAPP.TEF
+```
+
+The icon argument is eight hexadecimal bytes, one bitmap row per byte, with
+the most significant bit drawn first. Copy the resulting file into the FAT32
+volume and run it from the shell with `run MYAPP.TEF`.
 
 The default image is a raw, partitioned 64 MiB BIOS disk image. `make iso`
 packages it in a BIOS El Torito ISO using hard-disk emulation. The ISO still

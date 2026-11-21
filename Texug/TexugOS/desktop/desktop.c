@@ -6,18 +6,24 @@
 #include "keyboard.h"
 #include "mouse.h"
 #include "pit.h"
+#include "shell.h"
+#include "terminal.h"
 #include "video.h"
 
-#define WINDOW_COUNT 8u
+#define WINDOW_COUNT 9u
 #define TASKBAR_Y 184
 #define WINDOW_MIN_WIDTH 112u
 #define WINDOW_MIN_HEIGHT 72u
 #define WINDOW_DEFAULT_WIDTH 248u
 #define WINDOW_DEFAULT_HEIGHT 138u
 #define DESKTOP_RENDER_INTERVAL_TICKS 2u
-#define TASK_BUTTON_X 84
+#define TASK_BUTTON_X 44
 #define TASK_BUTTON_PITCH 24u
 #define TASK_BUTTON_WIDTH 23u
+#define TERMINAL_WINDOW 8u
+#define MENU_ROW_PITCH 18
+#define ICON_COLUMN_PITCH 72
+#define ICON_ROW_PITCH 40
 
 struct desktop_window {
     int32_t x;
@@ -37,15 +43,18 @@ enum drag_mode {
 
 static const char *const window_titles[WINDOW_COUNT] = {
     "Files", "Settings", "Browser", "Arena", "Notepad", "Snake", "Tetris",
-    "Paint",
+    "Paint", "Terminal",
 };
 static const char *const task_titles[WINDOW_COUNT] = {
     "File", "Set", "Web", "Game", "Note", "Snake", "Tetris", "Paint",
+    "Term",
 };
 static struct desktop_window windows[WINDOW_COUNT];
 static int32_t active_window = -1;
 static uint8_t menu_open;
 static uint8_t return_to_shell_requested;
+static uint8_t desktop_active;
+static uint32_t last_render_tick;
 static enum drag_mode dragging;
 static int32_t hovered_icon = -1;
 static int32_t drag_offset_x;
@@ -127,6 +136,13 @@ static void draw_legacy_icon(uint32_t index, int32_t icon_x, int32_t y)
         video_fill_rect(icon_x + 20, y + 11, 6u, 6u, 14u);
         video_fill_rect(icon_x + 8, y + 17, 6u, 6u, 9u);
         video_fill_rect(icon_x + 14, y + 17, 6u, 6u, 9u);
+    } else if (index == 8u) {
+        video_fill_rect(icon_x + 3, y + 5, 26u, 21u, 0u);
+        video_fill_rect(icon_x + 4, y + 6, 24u, 19u, 1u);
+        video_fill_rect(icon_x + 7, y + 10, 5u, 1u, 10u);
+        video_fill_rect(icon_x + 9, y + 11, 2u, 1u, 10u);
+        video_fill_rect(icon_x + 7, y + 12, 5u, 1u, 10u);
+        video_fill_rect(icon_x + 14, y + 17, 8u, 2u, 10u);
     } else {
         video_fill_rect(icon_x + 9, y + 4, 15u, 19u, 0u);
         video_fill_rect(icon_x + 11, y + 7, 11u, 13u, 15u);
@@ -135,10 +151,26 @@ static void draw_legacy_icon(uint32_t index, int32_t icon_x, int32_t y)
     }
 }
 
+/* Grade de icones: os 8 primeiros em 2 colunas x 4 linhas; o Terminal
+ * (indice 8) abre a terceira coluna. */
+static void icon_cell(uint32_t index, uint32_t *column, uint32_t *row)
+{
+    if (index < 8u) {
+        *column = index % 2u;
+        *row = index / 2u;
+    } else {
+        *column = 2u;
+        *row = index - 8u;
+    }
+}
+
 static void draw_icon(uint32_t index)
 {
-    int32_t tile_x = 8 + (int32_t)(index % 2u) * 72;
-    int32_t y = 12 + (int32_t)(index / 2u) * 40;
+    uint32_t column;
+    uint32_t row;
+    icon_cell(index, &column, &row);
+    int32_t tile_x = 8 + (int32_t)column * ICON_COLUMN_PITCH;
+    int32_t y = 12 + (int32_t)row * ICON_ROW_PITCH;
     if (!video_draw_app_icon(index, tile_x + 34, y + 15,
                              (int32_t)index == hovered_icon)) {
         draw_legacy_icon(index, tile_x + 18, y);
@@ -171,7 +203,6 @@ static void draw_wallpaper(void)
     video_fill_rect(0, TASKBAR_Y, VIDEO_WIDTH, VIDEO_HEIGHT - TASKBAR_Y, 1u);
     video_draw_hline(0, TASKBAR_Y, VIDEO_WIDTH, 8u);
     draw_panel_button(5, TASKBAR_Y + 2, 34u, 14u, "Menu", menu_open);
-    draw_panel_button(42, TASKBAR_Y + 2, 38u, 14u, "Shell", 0);
 
     for (uint32_t index = 0; index < WINDOW_COUNT; ++index) {
         if (windows[index].open && !windows[index].minimized) {
@@ -252,7 +283,7 @@ static void draw_start_menu(void)
         uint32_t column = index % 2u;
         uint32_t row = index / 2u;
         video_draw_button(8 + (int32_t)column * 64,
-                          66 + (int32_t)row * 22, 60u, 18u,
+                          66 + (int32_t)row * MENU_ROW_PITCH, 60u, 16u,
                           window_titles[index], 2u, 15u);
     }
     video_draw_button(8, 164, 124u, 14u, "Return to shell", 9u, 15u);
@@ -270,6 +301,13 @@ static void set_default_window(uint32_t index,
     window->y = 28 + (int32_t)(index % 5u) * 7;
     window->width = WINDOW_DEFAULT_WIDTH;
     window->height = WINDOW_DEFAULT_HEIGHT;
+    if (index == TERMINAL_WINDOW) {
+        /* Mais largo e alto: cabe o ASCII do texugo (38 colunas). */
+        window->x = 14;
+        window->y = 18;
+        window->width = 292u;
+        window->height = 164u;
+    }
     if (window->y + (int32_t)window->height > TASKBAR_Y) {
         window->y = TASKBAR_Y - (int32_t)window->height;
     }
@@ -334,10 +372,11 @@ static int32_t hit_test_window(uint32_t x, uint32_t y)
 /* Icone da area de trabalho sob o ponteiro (mesma regiao do clique). */
 static int32_t icon_index_at(uint32_t x, uint32_t y)
 {
-    if (x >= 8u && x < 148u && y >= 12u && y < 172u) {
-        uint32_t column = x < 76u ? 0u : 1u;
-        uint32_t row = (y - 12u) / 40u;
-        uint32_t index = row * 2u + column;
+    if (x >= 8u && x < 8u + 3u * (uint32_t)ICON_COLUMN_PITCH &&
+        y >= 12u && y < 172u) {
+        uint32_t column = (x - 8u) / (uint32_t)ICON_COLUMN_PITCH;
+        uint32_t row = (y - 12u) / (uint32_t)ICON_ROW_PITCH;
+        uint32_t index = column < 2u ? row * 2u + column : 8u + row;
         if (index < WINDOW_COUNT) {
             return (int32_t)index;
         }
@@ -351,15 +390,11 @@ static void handle_click(uint32_t x, uint32_t y)
         menu_open ^= 1u;
         return;
     }
-    if (y >= (uint32_t)TASKBAR_Y && x >= 42u && x < 81u) {
-        return_to_shell_requested = 1u;
-        return;
-    }
     if (menu_open) {
         if (x >= 8u && x < 132u) {
-            if (y >= 66u && y < 154u) {
+            if (y >= 66u && y < 66u + 5u * (uint32_t)MENU_ROW_PITCH) {
                 uint32_t column = x < 70u ? 0u : 1u;
-                uint32_t row = (y - 66u) / 22u;
+                uint32_t row = (y - 66u) / (uint32_t)MENU_ROW_PITCH;
                 open_window(row * 2u + column);
             } else if (y >= 164u && y < 180u) {
                 return_to_shell_requested = 1u;
@@ -409,14 +444,10 @@ static void handle_click(uint32_t x, uint32_t y)
         return;
     }
 
-    if (x >= 8u && x < 148u && y >= 12u && y < 172u) {
-        uint32_t column = x < 76u ? 0u : 1u;
-        uint32_t row = (y - 12u) / 40u;
-        uint32_t index = row * 2u + column;
-        if (index < WINDOW_COUNT) {
-            open_window(index);
-            return;
-        }
+    int32_t clicked_icon = icon_index_at(x, y);
+    if (clicked_icon >= 0) {
+        open_window((uint32_t)clicked_icon);
+        return;
     }
 
     if (y >= (uint32_t)TASKBAR_Y) {
@@ -460,9 +491,65 @@ static void update_drag(uint32_t x, uint32_t y, uint32_t buttons)
 
 static void exit_to_shell(void)
 {
+    shell_set_idle_hook(0);
+    desktop_active = 0u;
     (void)video_set_text_mode();
     console_clear();
     console_write("Returned from TexugOS Desktop.\n");
+}
+
+static void read_pointer(struct mouse_state *mouse, uint32_t *x, uint32_t *y)
+{
+    mouse_get_state(mouse);
+    uint32_t mouse_x = mouse->x * desktop_app_mouse_sensitivity() / 2u;
+    uint32_t mouse_y = mouse->y;
+    if (mouse_x >= VIDEO_WIDTH) {
+        mouse_x = VIDEO_WIDTH - 1u;
+    }
+    if (mouse_y >= VIDEO_HEIGHT) {
+        mouse_y = VIDEO_HEIGHT - 1u;
+    }
+    *x = mouse_x;
+    *y = mouse_y;
+}
+
+static void render_frame(uint32_t mouse_x, uint32_t mouse_y)
+{
+    hovered_icon = (!menu_open && dragging == DRAG_NONE &&
+                    hit_test_window(mouse_x, mouse_y) < 0)
+                       ? icon_index_at(mouse_x, mouse_y) : -1;
+    draw_desktop(mouse_x, mouse_y);
+    video_present();
+    last_render_tick = pit_ticks_read();
+}
+
+int desktop_is_running(void)
+{
+    return desktop_active != 0u;
+}
+
+/* Redesenho forcado: o Terminal usa antes de comandos demorados. */
+void desktop_refresh(void)
+{
+    if (desktop_active == 0u) {
+        return;
+    }
+    struct mouse_state mouse;
+    uint32_t mouse_x;
+    uint32_t mouse_y;
+    read_pointer(&mouse, &mouse_x, &mouse_y);
+    render_frame(mouse_x, mouse_y);
+}
+
+/* Gancho do shell (ver shell_set_idle_hook): mantem a tela viva enquanto
+ * um comando do Terminal espera por hardware ou pelo teclado. */
+static void desktop_idle_refresh(void)
+{
+    if (desktop_active != 0u &&
+        (uint32_t)(pit_ticks_read() - last_render_tick) >=
+            DESKTOP_RENDER_INTERVAL_TICKS) {
+        desktop_refresh();
+    }
 }
 
 void desktop_run(void)
@@ -480,23 +567,17 @@ void desktop_run(void)
         console_write("Unable to set VGA graphics mode.\n");
         return;
     }
+    desktop_active = 1u;
+    shell_set_idle_hook(desktop_idle_refresh);
 
     uint8_t previous_buttons = 0u;
     uint32_t previous_mouse_x = VIDEO_WIDTH / 2u;
-    uint32_t last_render_tick =
-        pit_ticks_read() - DESKTOP_RENDER_INTERVAL_TICKS;
+    last_render_tick = pit_ticks_read() - DESKTOP_RENDER_INTERVAL_TICKS;
     for (;;) {
         struct mouse_state mouse;
-        mouse_get_state(&mouse);
-        uint32_t mouse_x =
-            mouse.x * desktop_app_mouse_sensitivity() / 2u;
-        uint32_t mouse_y = mouse.y;
-        if (mouse_x >= VIDEO_WIDTH) {
-            mouse_x = VIDEO_WIDTH - 1u;
-        }
-        if (mouse_y >= VIDEO_HEIGHT) {
-            mouse_y = VIDEO_HEIGHT - 1u;
-        }
+        uint32_t mouse_x;
+        uint32_t mouse_y;
+        read_pointer(&mouse, &mouse_x, &mouse_y);
         char key;
         while (keyboard_read_character(&key)) {
             if ((uint8_t)key == 0x1bu) {
@@ -507,24 +588,16 @@ void desktop_run(void)
                 windows[(uint32_t)active_window].open &&
                 !windows[(uint32_t)active_window].minimized) {
                 desktop_app_handle_key((uint32_t)active_window, key);
-            } else if (key == '1') {
-                open_window(0u);
-            } else if (key == '2') {
-                open_window(1u);
-            } else if (key == '3') {
-                open_window(2u);
-            } else if (key == '4') {
-                open_window(3u);
-            } else if (key == '5') {
-                open_window(4u);
-            } else if (key == '6') {
-                open_window(5u);
-            } else if (key == '7') {
-                open_window(6u);
-            } else if (key == '8') {
-                open_window(7u);
+            } else if (key >= '1' && key <= '9') {
+                open_window((uint32_t)(key - '1'));
             } else if (key == '0') {
                 return_to_shell_requested = 1u;
+            }
+        }
+        if (terminal_take_close_request()) {
+            windows[TERMINAL_WINDOW].open = 0u;
+            if (active_window == (int32_t)TERMINAL_WINDOW) {
+                active_window = -1;
             }
         }
         if (return_to_shell_requested != 0u) {
@@ -561,12 +634,7 @@ void desktop_run(void)
         uint32_t ticks = pit_ticks_read();
         if ((uint32_t)(ticks - last_render_tick) >=
             DESKTOP_RENDER_INTERVAL_TICKS) {
-            hovered_icon = (!menu_open && dragging == DRAG_NONE &&
-                            hit_test_window(mouse_x, mouse_y) < 0)
-                               ? icon_index_at(mouse_x, mouse_y) : -1;
-            draw_desktop(mouse_x, mouse_y);
-            video_present();
-            last_render_tick = ticks;
+            render_frame(mouse_x, mouse_y);
         }
         __asm__ volatile ("hlt");
     }

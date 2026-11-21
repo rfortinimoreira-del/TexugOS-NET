@@ -101,6 +101,9 @@ enum rtl8192se_association_failure
 rtl8192se_association_last_failure(void);
 uint32_t rtl8192se_association_rx_frame_count(void);
 uint32_t rtl8192se_association_auth_response_count(void);
+uint32_t rtl8192se_association_auth_tx_submission_count(void);
+uint32_t rtl8192se_association_auth_tx_dma_completion_count(void);
+uint32_t rtl8192se_association_rx_invalid_descriptor_count(void);
 int rtl8192se_scan_start(void);
 int rtl8192se_scan_for_ssid_start(const uint8_t *ssid, uint8_t ssid_length);
 enum rtl8192se_scan_state rtl8192se_scan_poll(void);
