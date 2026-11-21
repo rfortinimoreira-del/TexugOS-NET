@@ -319,25 +319,31 @@ static void browser_load_page(void)
 static void draw_browser(int32_t x, int32_t y, uint32_t width,
                          uint32_t height)
 {
-    video_fill_rect(x + 3, y + 3, width - 6u, 11u, 2u);
+    /* Barra de titulo e barra de estado: lisas, escuras, com borda. */
+    video_draw_panel(x + 3, y + 3, width - 6u, 11u, 1u, 2u, 2u);
     video_fill_rect(x + 6, y + 7, 3u, 3u, browser_status_color);
-    video_draw_text(x + 13, y + 5, "HTTP BROWSER", 15u);
-    video_draw_text(x + 5, y + 17, browser_status, browser_status_color);
+    video_draw_text_middle(x + 13, y + 3, 11u, "HTTP Browser", 15u);
+    video_draw_panel(x + 3, y + 16, width - 6u, 11u, 1u, 2u, 2u);
+    video_draw_text_middle(x + 7, y + 16, 11u, browser_status,
+                           browser_status_color);
     for (uint32_t row = 0u; row < browser_line_count; ++row) {
         video_draw_text(x + 5, y + 30 + (int32_t)row * 10,
                         browser_lines[row], 1u);
     }
 
+    /* Campo de endereco: branco com borda. */
     uint32_t field_width = width - 43u;
     int32_t control_y = y + (int32_t)height - 16;
-    video_fill_rect(x + 4, control_y, field_width, 14u, 2u);
-    video_fill_rect(x + 4, control_y, field_width, 1u, 8u);
-    video_draw_text(x + 7, control_y + 4, ">", 11u);
-    uint32_t visible_characters = (field_width - 15u) / 6u;
-    uint32_t input_start = browser_input_length > visible_characters
-        ? browser_input_length - visible_characters : 0u;
-    video_draw_text(x + 16, control_y + 4,
-                    browser_input + input_start, 15u);
+    video_draw_panel(x + 4, control_y, field_width, 14u, 15u, 8u, 2u);
+    video_draw_text_middle(x + 7, control_y, 14u, ">", 9u);
+    uint32_t input_start = 0u;
+    while (input_start < browser_input_length &&
+           video_text_width(browser_input + input_start) + 20u >
+               field_width) {
+        ++input_start;
+    }
+    video_draw_text_middle(x + 16, control_y, 14u,
+                           browser_input + input_start, 1u);
     video_draw_button(x + (int32_t)width - 36, control_y,
                       32u, 14u, "GO", 9u, 15u);
 }
@@ -458,9 +464,10 @@ static void draw_files(int32_t x, int32_t y, uint32_t width,
                         index == files_selected ? 15u : 1u);
         if ((file_entries[index].attributes &
              FAT32_ATTRIBUTE_DIRECTORY) != 0u) {
-            video_draw_text(x + 5 + (int32_t)text_length(
-                                file_entries[index].name) * 6,
-                            y + 18 + (int32_t)row * 10, "/", 1u);
+            video_draw_text(x + 5 + (int32_t)video_text_width(
+                                file_entries[index].name),
+                            y + 18 + (int32_t)row * 10, "/",
+                            index == files_selected ? 15u : 1u);
         }
     }
 }
@@ -548,18 +555,20 @@ static void draw_notepad(int32_t x, int32_t y, uint32_t width,
 {
     int32_t toolbar_y = y + 3;
     uint32_t field_width = width - 78u;
-    video_fill_rect(x + 4, toolbar_y, field_width, 14u, 2u);
-    video_fill_rect(x + 4, toolbar_y, field_width, 1u,
-                    notepad_name_focused ? 11u : 8u);
-    video_draw_text(x + 7, toolbar_y + 4, "FILE", 11u);
-    uint32_t visible_name = field_width > 36u
-        ? (field_width - 36u) / 6u : 1u;
-    uint32_t name_start = text_length(notepad_name) > visible_name
-        ? text_length(notepad_name) - visible_name : 0u;
-    video_draw_text(x + 34, toolbar_y + 4,
-                    notepad_name[0] == '\0' ? "NEWFILE.TXT"
-                                            : notepad_name + name_start,
-                    notepad_name[0] == '\0' ? 7u : 15u);
+    video_draw_panel(x + 4, toolbar_y, field_width, 14u, 15u,
+                     notepad_name_focused ? 9u : 8u, 2u);
+    video_draw_text_middle(x + 7, toolbar_y, 14u, "File", 8u);
+    uint32_t name_start = 0u;
+    uint32_t name_length = text_length(notepad_name);
+    while (name_start < name_length &&
+           video_text_width(notepad_name + name_start) + 36u >
+               field_width) {
+        ++name_start;
+    }
+    video_draw_text_middle(x + 34, toolbar_y, 14u,
+                           notepad_name[0] == '\0' ? "NEWFILE.TXT"
+                                                   : notepad_name + name_start,
+                           notepad_name[0] == '\0' ? 8u : 1u);
     video_draw_button(x + (int32_t)width - 36, toolbar_y,
                       32u, 14u, "SAVE", 9u, 15u);
 
@@ -568,7 +577,7 @@ static void draw_notepad(int32_t x, int32_t y, uint32_t width,
     uint32_t editor_height = footer_y > editor_y
         ? (uint32_t)(footer_y - editor_y) : 0u;
     video_fill_rect(x + 4, editor_y, width - 8u, editor_height, 15u);
-    video_fill_rect(x + 4, editor_y, width - 8u, 1u, 7u);
+    video_draw_frame(x + 4, editor_y, width - 8u, editor_height, 8u);
 
     uint32_t columns = width > 12u ? (width - 12u) / 6u : 1u;
     uint32_t visible_rows = editor_height > 4u
@@ -602,11 +611,10 @@ static void draw_notepad(int32_t x, int32_t y, uint32_t width,
         }
         if (character >= ' ' && character <= '~' &&
             row >= first_row && row < first_row + visible_rows) {
-            char glyph[2] = {character, '\0'};
-            video_draw_text(x + 6 + (int32_t)column * 6,
-                            editor_y + 3 +
-                                (int32_t)(row - first_row) * 9,
-                            glyph, 1u);
+            video_draw_char_cell(x + 6 + (int32_t)column * 6,
+                                 editor_y + 3 +
+                                     (int32_t)(row - first_row) * 9,
+                                 character, 1u);
         }
         ++column;
     }
@@ -623,9 +631,9 @@ static void draw_notepad(int32_t x, int32_t y, uint32_t width,
         }
     }
 
-    video_fill_rect(x + 4, footer_y, width - 8u, 12u, 2u);
-    video_draw_text(x + 7, footer_y + 3, notepad_status,
-                    notepad_status_color);
+    video_draw_panel(x + 4, footer_y, width - 8u, 12u, 1u, 2u, 2u);
+    video_draw_text_middle(x + 7, footer_y, 12u, notepad_status,
+                           notepad_status_color);
 }
 
 static void draw_settings(int32_t x, int32_t y, uint32_t width,

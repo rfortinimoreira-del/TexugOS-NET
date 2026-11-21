@@ -166,7 +166,8 @@ $(BUILD)/secure_random.o: network/secure_random.c \
 $(BUILD)/mouse_cursor.h: assets/Mouse.png tools/mkcursor.py | $(BUILD)
 	$(PYTHON) tools/mkcursor.py $< $@
 
-$(BUILD)/video.o: drivers/video.c $(BUILD)/mouse_cursor.h | $(BUILD)
+$(BUILD)/video.o: drivers/video.c drivers/video.h \
+		drivers/font_dejavu.h $(BUILD)/mouse_cursor.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
 
 $(BUILD)/ata.o: drivers/ata.c drivers/ata.h drivers/ahci.h \

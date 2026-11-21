@@ -41,7 +41,6 @@ void paint_initialize(void)
 
 void paint_draw(int32_t x, int32_t y, uint32_t width, uint32_t height)
 {
-    video_draw_text(x + 4, y + 3, "COLOR", 1u);
     for (uint32_t color = 0u; color < 16u; ++color) {
         int32_t swatch_x = x + 4 + (int32_t)color * PAINT_SWATCH_STEP;
         video_fill_rect(swatch_x, y + PAINT_PALETTE_Y, 10u, 8u,

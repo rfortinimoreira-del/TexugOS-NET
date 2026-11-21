@@ -15,6 +15,9 @@
 #define WINDOW_DEFAULT_WIDTH 248u
 #define WINDOW_DEFAULT_HEIGHT 138u
 #define DESKTOP_RENDER_INTERVAL_TICKS 2u
+#define TASK_BUTTON_X 84
+#define TASK_BUTTON_PITCH 24u
+#define TASK_BUTTON_WIDTH 23u
 
 struct desktop_window {
     int32_t x;
@@ -63,8 +66,6 @@ static void draw_icon(uint32_t index)
     int32_t tile_x = 8 + (int32_t)(index % 2u) * 72;
     int32_t y = 12 + (int32_t)(index / 2u) * 40;
     int32_t icon_x = tile_x + 18;
-    video_fill_rect(icon_x + 2, y + 4, 28u, 22u, 8u);
-
     if (index == 0u) {
         video_fill_rect(icon_x + 4, y + 7, 13u, 5u, 14u);
         video_fill_rect(icon_x + 2, y + 11, 28u, 14u, 6u);
@@ -133,37 +134,42 @@ static void draw_icon(uint32_t index)
         video_fill_rect(icon_x + 8, y + 21, 17u, 3u, 8u);
     }
 
-    video_draw_text(tile_x + 4, y + 34, window_titles[index], 15u);
+    video_draw_text_centered(tile_x, y + 31, 68u, 11u,
+                             window_titles[index], 15u);
+}
+
+/* Botao do painel: cinza-azulado normal, azul quando ativo. */
+static void draw_panel_button(int32_t x, int32_t y, uint32_t width,
+                              uint32_t height, const char *label,
+                              int active)
+{
+    video_draw_panel(x, y, width, height, active ? 9u : 2u,
+                     active ? 11u : 8u, 2u);
+    video_draw_text_centered(x, y, width, height, label, 15u);
 }
 
 static void draw_wallpaper(void)
 {
-    for (uint32_t y = 0u; y < (uint32_t)TASKBAR_Y; ++y) {
-        uint8_t color = y < 42u ? 2u :
-                        (y < 90u ? 1u : (y < 138u ? 2u : 3u));
-        video_fill_rect(0, (int32_t)y, VIDEO_WIDTH, 1u, color);
-    }
-    video_fill_circle(258, 81, 43u, 9u);
-    video_fill_circle(258, 81, 34u, 11u);
-    video_fill_circle(258, 81, 24u, 2u);
-    video_fill_circle(258, 81, 13u, 9u);
+    /* Fundo liso, uma unica cor. */
+    video_fill_rect(0, 0, VIDEO_WIDTH, (uint32_t)TASKBAR_Y, 3u);
 
     for (uint32_t index = 0; index < WINDOW_COUNT; ++index) {
         draw_icon(index);
     }
 
-    video_fill_rect(0, TASKBAR_Y, VIDEO_WIDTH, VIDEO_HEIGHT - TASKBAR_Y, 0u);
-    video_fill_rect(0, TASKBAR_Y, VIDEO_WIDTH, 1u, 8u);
-    video_draw_button(5, TASKBAR_Y + 2, 34u, 14u, "MENU", 9u, 15u);
-    video_draw_button(42, TASKBAR_Y + 2, 38u, 14u, "SHELL", 2u, 15u);
+    /* Painel inferior. */
+    video_fill_rect(0, TASKBAR_Y, VIDEO_WIDTH, VIDEO_HEIGHT - TASKBAR_Y, 1u);
+    video_draw_hline(0, TASKBAR_Y, VIDEO_WIDTH, 8u);
+    draw_panel_button(5, TASKBAR_Y + 2, 34u, 14u, "Menu", menu_open);
+    draw_panel_button(42, TASKBAR_Y + 2, 38u, 14u, "Shell", 0);
 
     for (uint32_t index = 0; index < WINDOW_COUNT; ++index) {
         if (windows[index].open && !windows[index].minimized) {
-            int32_t button_x = 84 + (int32_t)index * 29;
-            video_draw_button(button_x, TASKBAR_Y + 2, 28u, 14u,
+            int32_t button_x = TASK_BUTTON_X +
+                               (int32_t)(index * TASK_BUTTON_PITCH);
+            draw_panel_button(button_x, TASKBAR_Y + 2, TASK_BUTTON_WIDTH, 14u,
                               task_titles[index],
-                              (int32_t)index == active_window ? 9u : 2u,
-                              15u);
+                              (int32_t)index == active_window);
         }
     }
 
@@ -176,7 +182,9 @@ static void draw_wallpaper(void)
         (char)('0' + seconds % 10u),
         '\0',
     };
-    video_draw_text(278, TASKBAR_Y + 5, clock_text, 15u);
+    video_draw_text_middle(316 - (int32_t)video_text_width(clock_text),
+                           TASKBAR_Y, VIDEO_HEIGHT - TASKBAR_Y,
+                           clock_text, 15u);
 }
 
 static void draw_window(uint32_t index)
@@ -190,32 +198,36 @@ static void draw_window(uint32_t index)
     int32_t y = window->y;
     uint32_t width = window->width;
     uint32_t height = window->height;
-    uint8_t title_color = (int32_t)index == active_window ? 9u : 2u;
+    int active = (int32_t)index == active_window;
+    uint8_t frame = active ? 9u : 7u;   /* barra de titulo e moldura */
+    uint8_t edge = active ? 2u : 8u;    /* borda de 1 pixel */
+    uint8_t ink = active ? 15u : 1u;    /* texto do titulo */
 
-    video_fill_rect(x + 2, y + 2, width, height, 0u);
-    video_fill_rect(x, y, width, height, 8u);
-    video_fill_rect(x + 1, y + 1, width - 2u, height - 2u, 7u);
-    video_fill_rect(x + 2, y + 2, width - 4u, 13u, title_color);
-    video_fill_rect(x + 2, y + 14, width - 4u, 1u, 11u);
-    video_draw_text(x + 7, y + 5, window_titles[index], 15u);
+    /* Moldura lisa e sem sombra, com borda fina e cantos suaves. */
+    video_draw_panel(x, y, width, height, frame, edge, 3u);
+    video_draw_text_middle(x + 7, y + 1, 14u, window_titles[index], ink);
 
-    video_draw_button(x + (int32_t)width - 36, y + 3, 10u, 9u, "", 2u, 15u);
-    video_fill_rect(x + (int32_t)width - 34, y + 9, 6u, 1u, 15u);
-    video_draw_button(x + (int32_t)width - 24, y + 3, 10u, 9u, "", 2u, 15u);
-    video_fill_rect(x + (int32_t)width - 21, y + 5, 4u, 4u, 15u);
+    /* Botoes: minimizar, maximizar, fechar. */
+    int32_t minimize_x = x + (int32_t)width - 36;
+    int32_t maximize_x = x + (int32_t)width - 24;
     int32_t close_x = x + (int32_t)width - 12;
-    video_draw_button(close_x, y + 3, 10u, 9u, "", 4u, 15u);
-    for (uint32_t offset = 0u; offset < 5u; ++offset) {
-        video_fill_rect(close_x + 2 + (int32_t)offset,
-                        y + 5 + (int32_t)offset, 1u, 1u, 15u);
-        video_fill_rect(close_x + 6 - (int32_t)offset,
-                        y + 5 + (int32_t)offset, 1u, 1u, 15u);
-    }
+    video_draw_panel(minimize_x, y + 3, 10u, 9u, 7u, edge, 2u);
+    video_fill_rect(minimize_x + 2, y + 8, 6u, 1u, 1u);
+    video_draw_panel(maximize_x, y + 3, 10u, 9u, 7u, edge, 2u);
+    video_draw_frame(maximize_x + 2, y + 5, 6u, 5u, 1u);
+    video_draw_panel(close_x, y + 3, 10u, 9u, 4u, edge, 2u);
+    video_draw_cross(close_x, y + 3, 10u, 9u, 15u);
 
+    /* Area do aplicativo, com borda propria. */
     video_fill_rect(x + 3, y + 17, width - 6u, height - 20u, 15u);
     desktop_app_draw(index, x + 3, y + 17, width - 6u, height - 20u);
-    video_fill_rect(x + (int32_t)width - 8,
-                    y + (int32_t)height - 8, 4u, 4u, 8u);
+    video_draw_frame(x + 3, y + 17, width - 6u, height - 20u, edge);
+
+    /* Alca de redimensionar: tres pontos na moldura. */
+    for (int32_t dot = 0; dot < 3; ++dot) {
+        video_fill_rect(x + (int32_t)width - 9 + dot * 2,
+                        y + (int32_t)height - 2, 1u, 1u, ink);
+    }
 }
 
 static void draw_start_menu(void)
@@ -223,9 +235,9 @@ static void draw_start_menu(void)
     if (!menu_open) {
         return;
     }
-    video_fill_rect(4, 48, 136u, 134u, 0u);
-    video_fill_rect(5, 49, 132u, 130u, 2u);
-    video_draw_text(12, 54, "TEXUGOS", 11u);
+    video_draw_panel(4, 48, 136u, 134u, 15u, 8u, 3u);
+    video_draw_text_middle(12, 50, 14u, "TexugOS", 9u);
+    video_draw_hline(8, 64, 124u, 7u);
     for (uint32_t index = 0u; index < WINDOW_COUNT; ++index) {
         uint32_t column = index % 2u;
         uint32_t row = index / 2u;
@@ -233,7 +245,7 @@ static void draw_start_menu(void)
                           66 + (int32_t)row * 22, 60u, 18u,
                           window_titles[index], 2u, 15u);
     }
-    video_draw_button(8, 164, 124u, 14u, "RETURN TO SHELL", 9u, 15u);
+    video_draw_button(8, 164, 124u, 14u, "Return to shell", 9u, 15u);
 }
 
 static void draw_cursor(uint32_t x, uint32_t y)
@@ -384,8 +396,11 @@ static void handle_click(uint32_t x, uint32_t y)
     }
 
     if (y >= (uint32_t)TASKBAR_Y) {
-        uint32_t index = x >= 84u && x < 84u + WINDOW_COUNT * 29u
-                             ? (x - 84u) / 29u : WINDOW_COUNT;
+        uint32_t index =
+            x >= (uint32_t)TASK_BUTTON_X &&
+            x < (uint32_t)TASK_BUTTON_X + WINDOW_COUNT * TASK_BUTTON_PITCH
+                ? (x - (uint32_t)TASK_BUTTON_X) / TASK_BUTTON_PITCH
+                : WINDOW_COUNT;
         if (index < WINDOW_COUNT && windows[index].open) {
             windows[index].minimized = 0u;
             active_window = (int32_t)index;

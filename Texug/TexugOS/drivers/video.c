@@ -1,6 +1,7 @@
 #include <stdint.h>
 
 #include "bios_video.h"
+#include "font_dejavu.h"
 #include "frame_allocator.h"
 #include "mouse_cursor.h"
 #include "paging.h"
@@ -61,76 +62,24 @@ static const uint8_t mode3_attribute[21] = {
 };
 
 static const uint8_t desktop_palette[16][3] = {
-    {2, 4, 8},   {4, 7, 11},   {7, 11, 17},  {11, 16, 24},
-    {56, 22, 26}, {41, 34, 62}, {63, 47, 21}, {49, 52, 55},
-    {20, 24, 30}, {20, 33, 61}, {14, 50, 34}, {17, 54, 57},
-    {51, 30, 57}, {60, 34, 42}, {63, 52, 25}, {61, 62, 63},
+    {5, 6, 7}, /*  0 contorno */
+    {11, 13, 13}, /*  1 texto escuro / barras */
+    {15, 19, 25}, /*  2 azul aco (botoes do painel) */
+    {11, 20, 32}, /*  3 fundo do desktop */
+    {52, 18, 17}, /*  4 vermelho */
+    {35, 31, 52}, /*  5 roxo */
+    {53, 36, 10}, /*  6 ambar */
+    {55, 55, 55}, /*  7 cinza claro (widgets) */
+    {34, 36, 37}, /*  8 cinza de borda */
+    {14, 32, 53}, /*  9 azul de destaque */
+    {14, 38, 22}, /* 10 verde */
+    {31, 50, 57}, /* 11 ciano */
+    {53, 16, 23}, /* 12 vermelho/erro */
+    {57, 35, 45}, /* 13 rosa */
+    {59, 50, 15}, /* 14 amarelo */
+    {63, 63, 63}, /* 15 branco */
 };
 
-static const uint8_t font[62][7] = {
-    {0x0e,0x11,0x11,0x1f,0x11,0x11,0x11}, /* A */
-    {0x1e,0x11,0x11,0x1e,0x11,0x11,0x1e}, /* B */
-    {0x0e,0x11,0x10,0x10,0x10,0x11,0x0e}, /* C */
-    {0x1e,0x11,0x11,0x11,0x11,0x11,0x1e}, /* D */
-    {0x1f,0x10,0x10,0x1e,0x10,0x10,0x1f}, /* E */
-    {0x1f,0x10,0x10,0x1e,0x10,0x10,0x10}, /* F */
-    {0x0e,0x11,0x10,0x17,0x11,0x11,0x0f}, /* G */
-    {0x11,0x11,0x11,0x1f,0x11,0x11,0x11}, /* H */
-    {0x0e,0x04,0x04,0x04,0x04,0x04,0x0e}, /* I */
-    {0x07,0x02,0x02,0x02,0x12,0x12,0x0c}, /* J */
-    {0x11,0x12,0x14,0x18,0x14,0x12,0x11}, /* K */
-    {0x10,0x10,0x10,0x10,0x10,0x10,0x1f}, /* L */
-    {0x11,0x1b,0x15,0x15,0x11,0x11,0x11}, /* M */
-    {0x11,0x19,0x15,0x13,0x11,0x11,0x11}, /* N */
-    {0x0e,0x11,0x11,0x11,0x11,0x11,0x0e}, /* O */
-    {0x1e,0x11,0x11,0x1e,0x10,0x10,0x10}, /* P */
-    {0x0e,0x11,0x11,0x11,0x15,0x12,0x0d}, /* Q */
-    {0x1e,0x11,0x11,0x1e,0x14,0x12,0x11}, /* R */
-    {0x0f,0x10,0x10,0x0e,0x01,0x01,0x1e}, /* S */
-    {0x1f,0x04,0x04,0x04,0x04,0x04,0x04}, /* T */
-    {0x11,0x11,0x11,0x11,0x11,0x11,0x0e}, /* U */
-    {0x11,0x11,0x11,0x11,0x11,0x0a,0x04}, /* V */
-    {0x11,0x11,0x11,0x15,0x15,0x15,0x0a}, /* W */
-    {0x11,0x11,0x0a,0x04,0x0a,0x11,0x11}, /* X */
-    {0x11,0x11,0x0a,0x04,0x04,0x04,0x04}, /* Y */
-    {0x1f,0x01,0x02,0x04,0x08,0x10,0x1f}, /* Z */
-    {0x0e,0x11,0x13,0x15,0x19,0x11,0x0e}, /* 0 */
-    {0x04,0x0c,0x04,0x04,0x04,0x04,0x0e}, /* 1 */
-    {0x0e,0x11,0x01,0x02,0x04,0x08,0x1f}, /* 2 */
-    {0x1e,0x01,0x01,0x0e,0x01,0x01,0x1e}, /* 3 */
-    {0x02,0x06,0x0a,0x12,0x1f,0x02,0x02}, /* 4 */
-    {0x1f,0x10,0x10,0x1e,0x01,0x01,0x1e}, /* 5 */
-    {0x0e,0x10,0x10,0x1e,0x11,0x11,0x0e}, /* 6 */
-    {0x1f,0x01,0x02,0x04,0x08,0x08,0x08}, /* 7 */
-    {0x0e,0x11,0x11,0x0e,0x11,0x11,0x0e}, /* 8 */
-    {0x0e,0x11,0x11,0x0f,0x01,0x01,0x0e}, /* 9 */
-    {0x00,0x0e,0x01,0x0f,0x11,0x13,0x0d}, /* a */
-    {0x10,0x10,0x1e,0x11,0x11,0x11,0x1e}, /* b */
-    {0x00,0x0e,0x11,0x10,0x10,0x11,0x0e}, /* c */
-    {0x01,0x01,0x0f,0x11,0x11,0x13,0x0d}, /* d */
-    {0x00,0x0e,0x11,0x1f,0x10,0x11,0x0e}, /* e */
-    {0x06,0x09,0x08,0x1c,0x08,0x08,0x08}, /* f */
-    {0x00,0x0f,0x11,0x0f,0x01,0x11,0x0e}, /* g */
-    {0x10,0x10,0x1e,0x11,0x11,0x11,0x11}, /* h */
-    {0x04,0x00,0x0c,0x04,0x04,0x04,0x0e}, /* i */
-    {0x02,0x00,0x06,0x02,0x02,0x12,0x0c}, /* j */
-    {0x10,0x10,0x12,0x14,0x18,0x14,0x12}, /* k */
-    {0x0c,0x04,0x04,0x04,0x04,0x04,0x0e}, /* l */
-    {0x00,0x1a,0x15,0x15,0x15,0x15,0x15}, /* m */
-    {0x00,0x1e,0x11,0x11,0x11,0x11,0x11}, /* n */
-    {0x00,0x0e,0x11,0x11,0x11,0x11,0x0e}, /* o */
-    {0x00,0x1e,0x11,0x11,0x1e,0x10,0x10}, /* p */
-    {0x00,0x0f,0x11,0x11,0x0f,0x01,0x01}, /* q */
-    {0x00,0x16,0x19,0x10,0x10,0x10,0x10}, /* r */
-    {0x00,0x0f,0x10,0x0e,0x01,0x11,0x0e}, /* s */
-    {0x08,0x08,0x1c,0x08,0x08,0x09,0x06}, /* t */
-    {0x00,0x11,0x11,0x11,0x11,0x13,0x0d}, /* u */
-    {0x00,0x11,0x11,0x11,0x11,0x0a,0x04}, /* v */
-    {0x00,0x11,0x11,0x15,0x15,0x15,0x0a}, /* w */
-    {0x00,0x11,0x0a,0x04,0x0a,0x11,0x11}, /* x */
-    {0x00,0x11,0x11,0x0f,0x01,0x11,0x0e}, /* y */
-    {0x00,0x1f,0x02,0x04,0x08,0x10,0x1f}, /* z */
-};
 
 static uint8_t saved_text_font[VGA_FONT_CHARACTERS * VGA_FONT_HEIGHT];
 static uint8_t text_font_saved;
@@ -438,19 +387,36 @@ static void framebuffer_fill_span(uint32_t index, uint32_t length,
     }
 }
 
-void video_fill_rect(int32_t x, int32_t y, uint32_t width, uint32_t height,
-                     uint8_t color)
+/* ---- Geometria -------------------------------------------------------
+ * Os aplicativos desenham em coordenadas logicas de 320x200. No modo VBE
+ * 640x480 isso vira x * 2 e y * 12 / 5. Bordas e texto sao desenhados em
+ * pixels reais do dispositivo, para ficarem sempre nitidos (1 px).
+ */
+struct device_rect {
+    int32_t left;
+    int32_t top;
+    int32_t right;   /* exclusivo */
+    int32_t bottom;  /* exclusivo */
+};
+
+static void logical_to_device(int32_t x, int32_t y, uint32_t width,
+                              uint32_t height, struct device_rect *rect)
 {
-    int32_t left = x;
-    int32_t top = y;
-    int32_t right = x + (int32_t)width;
-    int32_t bottom = y + (int32_t)height;
+    rect->left = x;
+    rect->top = y;
+    rect->right = x + (int32_t)width;
+    rect->bottom = y + (int32_t)height;
     if (vbe_mode_active) {
-        left *= 2;
-        right *= 2;
-        top = (top * 12) / 5;
-        bottom = (bottom * 12) / 5;
+        rect->left *= 2;
+        rect->right *= 2;
+        rect->top = (rect->top * 12) / 5;
+        rect->bottom = (rect->bottom * 12) / 5;
     }
+}
+
+static void fill_device_rect(int32_t left, int32_t top, int32_t right,
+                             int32_t bottom, uint8_t color)
+{
     int32_t display_width = (int32_t)video_display_width();
     int32_t display_height = (int32_t)video_display_height();
     if (left < 0) {
@@ -474,6 +440,104 @@ void video_fill_rect(int32_t x, int32_t y, uint32_t width, uint32_t height,
                                   (uint32_t)left,
                               span, color);
     }
+}
+
+void video_fill_rect(int32_t x, int32_t y, uint32_t width, uint32_t height,
+                     uint8_t color)
+{
+    struct device_rect rect;
+    logical_to_device(x, y, width, height, &rect);
+    fill_device_rect(rect.left, rect.top, rect.right, rect.bottom, color);
+}
+
+/* Contorno de 1 pixel real, sem preenchimento. */
+void video_draw_frame(int32_t x, int32_t y, uint32_t width, uint32_t height,
+                      uint8_t color)
+{
+    struct device_rect rect;
+    logical_to_device(x, y, width, height, &rect);
+    if (rect.right - rect.left < 2 || rect.bottom - rect.top < 2) {
+        fill_device_rect(rect.left, rect.top, rect.right, rect.bottom,
+                         color);
+        return;
+    }
+    fill_device_rect(rect.left, rect.top, rect.right, rect.top + 1, color);
+    fill_device_rect(rect.left, rect.bottom - 1, rect.right, rect.bottom,
+                     color);
+    fill_device_rect(rect.left, rect.top + 1, rect.left + 1,
+                     rect.bottom - 1, color);
+    fill_device_rect(rect.right - 1, rect.top + 1, rect.right,
+                     rect.bottom - 1, color);
+}
+
+/* Linha horizontal de 1 pixel real. */
+void video_draw_hline(int32_t x, int32_t y, uint32_t width, uint8_t color)
+{
+    struct device_rect rect;
+    logical_to_device(x, y, width, 1u, &rect);
+    fill_device_rect(rect.left, rect.top, rect.right, rect.top + 1, color);
+}
+
+/* "X" de diagonais continuas (2 pixels de largura), centrado numa caixa. */
+void video_draw_cross(int32_t x, int32_t y, uint32_t width, uint32_t height,
+                      uint8_t color)
+{
+    struct device_rect rect;
+    logical_to_device(x, y, width, height, &rect);
+    int32_t size = vbe_mode_active ? 9 : 5;
+    int32_t left = rect.left + ((rect.right - rect.left) - size) / 2;
+    int32_t top = rect.top + ((rect.bottom - rect.top) - size) / 2;
+    int32_t thickness = vbe_mode_active ? 2 : 1;
+    for (int32_t step = 0; step < size; ++step) {
+        fill_device_rect(left + step, top + step,
+                         left + step + thickness, top + step + 1, color);
+        fill_device_rect(left + size - 1 - step, top + step,
+                         left + size - 1 - step + thickness, top + step + 1,
+                         color);
+    }
+}
+
+/* Recorte dos cantos (em pixels) por raio e por linha, de fora para dentro. */
+static const uint8_t corner_inset[4][3] = {
+    {0, 0, 0}, {0, 0, 0}, {1, 0, 0}, {2, 1, 0},
+};
+
+static void fill_device_round(int32_t left, int32_t top, int32_t right,
+                              int32_t bottom, uint32_t radius, uint8_t color)
+{
+    if (radius > 3u) {
+        radius = 3u;
+    }
+    if (radius < 2u || right - left < (int32_t)radius * 2 + 1 ||
+        bottom - top < (int32_t)radius * 2 + 1) {
+        fill_device_rect(left, top, right, bottom, color);
+        return;
+    }
+    fill_device_rect(left, top + (int32_t)radius, right,
+                     bottom - (int32_t)radius, color);
+    for (uint32_t row = 0u; row < radius; ++row) {
+        int32_t inset = (int32_t)corner_inset[radius][row];
+        fill_device_rect(left + inset, top + (int32_t)row,
+                         right - inset, top + (int32_t)row + 1, color);
+        fill_device_rect(left + inset, bottom - 1 - (int32_t)row,
+                         right - inset, bottom - (int32_t)row, color);
+    }
+}
+
+/* Painel liso: preenchimento chapado, borda de 1 pixel, cantos suaves. */
+void video_draw_panel(int32_t x, int32_t y, uint32_t width, uint32_t height,
+                      uint8_t fill, uint8_t border, uint32_t radius)
+{
+    struct device_rect rect;
+    logical_to_device(x, y, width, height, &rect);
+    if (!vbe_mode_active && radius > 2u) {
+        radius = 2u;
+    }
+    fill_device_round(rect.left, rect.top, rect.right, rect.bottom, radius,
+                      border);
+    fill_device_round(rect.left + 1, rect.top + 1, rect.right - 1,
+                      rect.bottom - 1, radius != 0u ? radius - 1u : 0u,
+                      fill);
 }
 
 void video_fill_circle(int32_t center_x, int32_t center_y, uint32_t radius,
@@ -531,170 +595,148 @@ void video_draw_mouse_cursor(int32_t x, int32_t y)
                        MOUSE_CURSOR_WIDTH, MOUSE_CURSOR_HEIGHT);
 }
 
-static void fill_round_rect(int32_t x, int32_t y, uint32_t width,
-                            uint32_t height, uint32_t radius, uint8_t color)
+/* ---- Texto (DejaVu Sans, bitmap 1 bpp proporcional) ------------------- */
+struct font_face {
+    const struct font_glyph *glyphs;
+    const uint8_t *bitmap;
+    uint32_t cap_height;
+    uint32_t baseline;   /* linha de base dentro da caixa de texto padrao */
+    uint32_t cell;       /* largura de uma celula de 6 unidades logicas */
+};
+
+static const struct font_face face_vbe = {
+    dejavu14_glyphs, dejavu14_bitmap, DEJAVU14_CAP_HEIGHT, 13u, 12u,
+};
+static const struct font_face face_vga = {
+    dejavu9_glyphs, dejavu9_bitmap, DEJAVU9_CAP_HEIGHT, 7u, 6u,
+};
+
+static const struct font_face *current_face(void)
 {
-    if (width <= radius * 2u || height <= radius * 2u) {
-        video_fill_rect(x, y, width, height, color);
-        return;
-    }
-    video_fill_rect(x + (int32_t)radius, y, width - radius * 2u, height,
-                    color);
-    video_fill_rect(x, y + (int32_t)radius, width, height - radius * 2u,
-                    color);
-    video_fill_circle(x + (int32_t)radius, y + (int32_t)radius, radius,
-                      color);
-    video_fill_circle(x + (int32_t)width - (int32_t)radius - 1,
-                      y + (int32_t)radius, radius, color);
-    video_fill_circle(x + (int32_t)radius,
-                      y + (int32_t)height - (int32_t)radius - 1,
-                      radius, color);
-    video_fill_circle(x + (int32_t)width - (int32_t)radius - 1,
-                      y + (int32_t)height - (int32_t)radius - 1,
-                      radius, color);
+    return vbe_mode_active ? &face_vbe : &face_vga;
 }
 
-static const uint8_t *glyph_for(char character)
+static const struct font_glyph *face_glyph(const struct font_face *face,
+                                           char character)
 {
-    if (character >= 'A' && character <= 'Z') {
-        return font[(uint32_t)(character - 'A')];
+    uint32_t code = (uint8_t)character;
+    if (code < FONT_FIRST_CHAR || code > FONT_LAST_CHAR) {
+        code = ' ';
     }
-    if (character >= '0' && character <= '9') {
-        return font[26u + (uint32_t)(character - '0')];
-    }
-    if (character >= 'a' && character <= 'z') {
-        return font[36u + (uint32_t)(character - 'a')];
-    }
-
-    static const uint8_t exclamation[7] = {
-        0x04,0x04,0x04,0x04,0x04,0x00,0x04,
-    };
-    static const uint8_t question[7] = {
-        0x0e,0x11,0x01,0x02,0x04,0x00,0x04,
-    };
-    static const uint8_t equals[7] = {
-        0x00,0x1f,0x00,0x1f,0x00,0x00,0x00,
-    };
-    static const uint8_t plus[7] = {
-        0x00,0x04,0x04,0x1f,0x04,0x04,0x00,
-    };
-    static const uint8_t comma[7] = {
-        0x00,0x00,0x00,0x00,0x00,0x04,0x08,
-    };
-    static const uint8_t semicolon[7] = {
-        0x00,0x04,0x00,0x00,0x04,0x04,0x08,
-    };
-    static const uint8_t left_parenthesis[7] = {
-        0x02,0x04,0x08,0x08,0x08,0x04,0x02,
-    };
-    static const uint8_t right_parenthesis[7] = {
-        0x08,0x04,0x02,0x02,0x02,0x04,0x08,
-    };
-    static const uint8_t underscore[7] = {
-        0x00,0x00,0x00,0x00,0x00,0x00,0x1f,
-    };
-    static const uint8_t apostrophe[7] = {
-        0x04,0x04,0x02,0x00,0x00,0x00,0x00,
-    };
-    static const uint8_t quote[7] = {
-        0x0a,0x0a,0x05,0x00,0x00,0x00,0x00,
-    };
-    static const uint8_t at[7] = {
-        0x0e,0x11,0x17,0x15,0x17,0x10,0x0e,
-    };
-    static const uint8_t hash[7] = {
-        0x0a,0x1f,0x0a,0x0a,0x1f,0x0a,0x00,
-    };
-    static const uint8_t ampersand[7] = {
-        0x0c,0x12,0x14,0x08,0x15,0x12,0x0d,
-    };
-    static const uint8_t less_than[7] = {
-        0x02,0x04,0x08,0x10,0x08,0x04,0x02,
-    };
-    static const uint8_t greater_than[7] = {
-        0x08,0x04,0x02,0x01,0x02,0x04,0x08,
-    };
-
-    switch (character) {
-    case '!': return exclamation;
-    case '?': return question;
-    case '=': return equals;
-    case '+': return plus;
-    case ',': return comma;
-    case ';': return semicolon;
-    case '(': return left_parenthesis;
-    case ')': return right_parenthesis;
-    case '_': return underscore;
-    case '\'': return apostrophe;
-    case '"': return quote;
-    case '@': return at;
-    case '#': return hash;
-    case '&': return ampersand;
-    case '<': return less_than;
-    case '>': return greater_than;
-    default: break;
-    }
-    return 0;
+    return &face->glyphs[code - FONT_FIRST_CHAR];
 }
 
-static uint32_t text_width(const char *text)
+static uint32_t face_text_width(const struct font_face *face,
+                                const char *text)
 {
-    uint32_t length = 0u;
-    while (text[length] != '\0') {
-        ++length;
+    uint32_t width = 0u;
+    while (*text != '\0') {
+        width += face_glyph(face, *text)->advance;
+        ++text;
     }
-    return length * 6u;
+    return width;
 }
 
-void video_draw_text(int32_t x, int32_t y, const char *text, uint8_t color)
+static void draw_glyph(const struct font_face *face, int32_t x,
+                       int32_t baseline, const struct font_glyph *glyph,
+                       uint8_t color)
+{
+    uint32_t stride = ((uint32_t)glyph->width + 7u) / 8u;
+    const uint8_t *rows = face->bitmap + glyph->offset;
+    for (uint32_t row = 0u; row < glyph->height; ++row) {
+        for (uint32_t column = 0u; column < glyph->width; ++column) {
+            if ((rows[row * stride + column / 8u] &
+                 (0x80u >> (column % 8u))) != 0u) {
+                framebuffer_pixel(x + glyph->left + (int32_t)column,
+                                  baseline - glyph->top + (int32_t)row,
+                                  color);
+            }
+        }
+    }
+}
+
+static void draw_string_device(const struct font_face *face, int32_t x,
+                               int32_t baseline, const char *text,
+                               uint8_t color)
 {
     while (*text != '\0') {
-        const uint8_t *glyph = glyph_for(*text);
-        if (glyph != 0) {
-            if (vbe_mode_active) {
-                int32_t origin_x = x * 2;
-                int32_t origin_y = (y * 12) / 5;
-                for (uint32_t row = 0u; row < 16u; ++row) {
-                    uint32_t source_row = row * 7u / 16u;
-                    for (uint32_t column = 0u; column < 8u; ++column) {
-                        uint32_t source_column = column * 5u / 8u;
-                        if ((glyph[source_row] &
-                             (1u << (4u - source_column))) != 0u) {
-                            framebuffer_pixel(
-                                origin_x + (int32_t)column,
-                                origin_y + (int32_t)row, color);
-                        }
-                    }
-                }
-            } else {
-                for (uint32_t row = 0; row < 7u; ++row) {
-                    for (uint32_t column = 0; column < 5u; ++column) {
-                        if ((glyph[row] & (1u << (4u - column))) != 0u) {
-                            video_fill_rect(x + (int32_t)column,
-                                            y + (int32_t)row, 1u, 1u, color);
-                        }
-                    }
-                }
-            }
-        } else if (*text == '.') {
-            video_fill_rect(x + 2, y + 6, 1u, 1u, color);
-        } else if (*text == ':') {
-            video_fill_rect(x + 2, y + 2, 1u, 1u, color);
-            video_fill_rect(x + 2, y + 5, 1u, 1u, color);
-        } else if (*text == '-') {
-            video_fill_rect(x + 1, y + 3, 3u, 1u, color);
-        } else if (*text == '/') {
-            video_fill_rect(x + 3, y + 1, 1u, 1u, color);
-            video_fill_rect(x + 2, y + 2, 1u, 1u, color);
-            video_fill_rect(x + 2, y + 3, 1u, 1u, color);
-            video_fill_rect(x + 1, y + 4, 1u, 1u, color);
-            video_fill_rect(x + 1, y + 5, 1u, 1u, color);
-        }
-        x += 6;
+        const struct font_glyph *glyph = face_glyph(face, *text);
+        draw_glyph(face, x, baseline, glyph, color);
+        x += glyph->advance;
         ++text;
     }
 }
 
+static int32_t device_x(int32_t x)
+{
+    return vbe_mode_active ? x * 2 : x;
+}
+
+static int32_t device_y(int32_t y)
+{
+    return vbe_mode_active ? (y * 12) / 5 : y;
+}
+
+/* Largura do texto em unidades logicas (as mesmas de x/y dos widgets). */
+uint32_t video_text_width(const char *text)
+{
+    uint32_t pixels = face_text_width(current_face(), text);
+    return vbe_mode_active ? (pixels + 1u) / 2u : pixels;
+}
+
+/* Canto superior esquerdo da caixa de texto em (x, y). */
+void video_draw_text(int32_t x, int32_t y, const char *text, uint8_t color)
+{
+    const struct font_face *face = current_face();
+    draw_string_device(face, device_x(x),
+                       device_y(y) + (int32_t)face->baseline, text, color);
+}
+
+/* Texto alinhado a esquerda, centrado na vertical numa faixa de altura h. */
+void video_draw_text_middle(int32_t x, int32_t y, uint32_t height,
+                            const char *text, uint8_t color)
+{
+    const struct font_face *face = current_face();
+    struct device_rect rect;
+    logical_to_device(x, y, 0u, height, &rect);
+    int32_t box = rect.bottom - rect.top;
+    draw_string_device(face, rect.left,
+                       rect.top + (box + (int32_t)face->cap_height) / 2,
+                       text, color);
+}
+
+/* Texto centrado num retangulo. */
+void video_draw_text_centered(int32_t x, int32_t y, uint32_t width,
+                              uint32_t height, const char *text,
+                              uint8_t color)
+{
+    const struct font_face *face = current_face();
+    struct device_rect rect;
+    logical_to_device(x, y, width, height, &rect);
+    int32_t box_width = rect.right - rect.left;
+    int32_t box_height = rect.bottom - rect.top;
+    int32_t text_width = (int32_t)face_text_width(face, text);
+    draw_string_device(face, rect.left + (box_width - text_width) / 2,
+                       rect.top + (box_height + (int32_t)face->cap_height) / 2,
+                       text, color);
+}
+
+/* Um caractere centrado numa celula de 6 unidades logicas (editor de texto,
+ * contadores): mantem o passo fixo mesmo com fonte proporcional. */
+void video_draw_char_cell(int32_t x, int32_t y, char character,
+                          uint8_t color)
+{
+    const struct font_face *face = current_face();
+    const struct font_glyph *glyph = face_glyph(face, character);
+    int32_t left = device_x(x) +
+                   ((int32_t)face->cell - (int32_t)glyph->advance) / 2;
+    draw_glyph(face, left, device_y(y) + (int32_t)face->baseline, glyph,
+               color);
+}
+
+/* Botao liso com borda. Papeis de cor mantidos para os apps existentes:
+ *   fundo 2 -> botao neutro (cinza claro, texto escuro)
+ *   fundo 9 -> botao de destaque (azul)   fundo 4/12 -> perigo/erro */
 void video_draw_button(int32_t x, int32_t y, uint32_t width, uint32_t height,
                        const char *label, uint8_t background,
                        uint8_t foreground)
@@ -702,18 +744,23 @@ void video_draw_button(int32_t x, int32_t y, uint32_t width, uint32_t height,
     if (width < 10u || height < 9u) {
         return;
     }
-    fill_round_rect(x + 1, y + 2, width, height, 2u, 0u);
-    fill_round_rect(x, y, width, height, 2u, 8u);
-    fill_round_rect(x + 1, y + 1, width - 2u, height - 2u,
-                    2u, background);
-    video_fill_rect(x + 4, y + 1, width - 8u, 1u, 11u);
-    video_fill_rect(x + 4, y + (int32_t)height - 2,
-                    width - 8u, 1u, 3u);
-
-    uint32_t label_width = text_width(label);
-    if (label_width <= width - 6u) {
-        int32_t label_x = x + (int32_t)(width - label_width) / 2;
-        int32_t label_y = y + ((int32_t)height - 7) / 2;
-        video_draw_text(label_x, label_y, label, foreground);
+    uint8_t border = 8u;
+    if (background == 2u) {
+        background = 7u;
+        foreground = 1u;
+    } else if (background == 9u) {
+        border = 2u;
+    } else {
+        border = 0u;
+    }
+    video_draw_panel(x, y, width, height, background, border, 2u);
+    if (label[0] != '\0') {
+        const struct font_face *face = current_face();
+        uint32_t label_width = face_text_width(face, label);
+        uint32_t box_width = (uint32_t)(vbe_mode_active ? width * 2u : width);
+        if (label_width + 4u <= box_width) {
+            video_draw_text_centered(x, y, width, height, label,
+                                     foreground);
+        }
     }
 }
